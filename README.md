@@ -129,12 +129,18 @@ can come from your shell environment.
 ccp [-q] [PROFILE] [args…]   launch claude; trailing args pass straight through
 ccp list                     list profiles ("*" = default)
 ccp show PROFILE             exact env a launch would apply (secrets masked)
-ccp add NAME [--type …] [--model …] [--api-key-env …] [--set K=V] …
+ccp add [NAME] [--type …] [--model …] [--api-key-env …] [--set K=V] …
+                             # no args → interactive wizard (arrow keys / numbers)
 ccp edit [NAME]              $EDITOR on profiles/NAME.toml or config.toml
-ccp remove NAME
+                             # no args → picker
+ccp remove [NAME]            delete a profile (picker when no args)
 ccp proxy status|start|stop|restart|install|init|logs|models
 ccp doctor                   validate binaries, secrets, conflicts, connectivity
 ```
+
+`ccp add` without arguments walks through name, type, model, auth and
+writes `profiles/<name>.toml` for you; `ccp remove` / `ccp edit` show a
+picker when no name is given. Flags still work for scripting.
 
 Everything after the profile name goes to claude: `ccp kimi --resume -c`.
 
