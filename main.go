@@ -21,7 +21,7 @@ usage:
   ccp <command> [args…]
 
 commands:
-  list                    list profiles ("*"" marks the default)
+  list                    list profiles ("*" marks the default)
   show PROFILE            print the exact environment a launch would apply
   add NAME [--opts]       create a new profile file
   edit [NAME]             open config.toml (or profiles/NAME.toml) in $EDITOR
