@@ -47,11 +47,15 @@ doesn't serve them. A profile without `model` inherits the `model` value from
 
 ## Install
 
-One-liner (requires Go >= 1.25):
+One-liner:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/parnexcodes/claude-code-profile/master/install.sh | bash
 ```
+
+The script installs a prebuilt binary from GitHub Releases when one exists for
+your platform (verifying it against the published sha256 checksums) and falls
+back to compiling from source if not, which needs Go >= 1.25.
 
 Or from a clone:
 
