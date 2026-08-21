@@ -242,7 +242,7 @@ func (c *Config) resolveProfile(name string) (string, *Profile) {
 		return name, p
 	}
 	names := c.ProfileNames()
-	die("no such profile %q — available: %s%s",
+	die("no such profile %q; available: %s%s",
 		name, strings.Join(names, ", "),
 		orDefaultHint(c.defaultProfileName()))
 	return "", nil
@@ -259,7 +259,7 @@ func orDefaultHint(def string) string {
 // first-run bootstrap
 // ---------------------------------------------------------------------------
 
-const configTemplate = `# ccp — Claude Code profile launcher
+const configTemplate = `# ccp: Claude Code profile launcher
 # Profiles live in profiles/*.toml (one file per profile), or define them
 # inline here as [profiles.<name>] tables. Run ` + "`ccp help`" + ` for details.
 
@@ -269,7 +269,7 @@ default_profile = "glm"
 [proxy]
 # CLIProxyAPI lifecycle settings (used by profiles with type = "cliproxy").
 # Leave binary empty to auto-detect: PATH, ~/.local/bin/cli-proxy-api,
-# <state>/bin/cli-proxy-api — or run ` + "`ccp proxy install`" + `.
+# <state>/bin/cli-proxy-api; or run ` + "`ccp proxy install`" + `.
 #binary = "~/.local/bin/cli-proxy-api"
 config = ""              # default: <this dir>/cliproxy/config.yaml
 host = "127.0.0.1"
@@ -279,7 +279,7 @@ start_timeout_secs = 20
 #extra_args = []
 `
 
-const glmTemplate = `# ` + "`" + `ccp glm` + "`" + ` — GLM through local CLIProxyAPI.
+const glmTemplate = `# ` + "`" + `ccp glm` + "`" + `; GLM through local CLIProxyAPI.
 # Run ` + "`" + `ccp proxy models` + "`" + ` to list model IDs your proxy actually exposes.
 description = "GLM via local CLIProxyAPI"
 type = "cliproxy"
@@ -288,7 +288,7 @@ model = "glm-4.6"
 api_timeout_ms = 600000
 `
 
-const kimiTemplate = `# ` + "`" + `ccp kimi` + "`" + ` — Kimi through local CLIProxyAPI.
+const kimiTemplate = `# ` + "`" + `ccp kimi` + "`" + `; Kimi through local CLIProxyAPI.
 # Run ` + "`" + `ccp proxy models` + "`" + ` to list model IDs your proxy actually exposes.
 description = "Kimi via local CLIProxyAPI"
 type = "cliproxy"
@@ -296,7 +296,7 @@ model = "kimi-k3"
 api_timeout_ms = 600000
 `
 
-const officialTemplate = `# ` + "`" + `ccp official` + "`" + ` — vanilla Claude Code with your Anthropic login.
+const officialTemplate = `# ` + "`" + `ccp official` + "`" + `; vanilla Claude Code with your Anthropic login.
 description = "Official Anthropic (vanilla Claude Code)"
 type = "anthropic"
 auth = "none"

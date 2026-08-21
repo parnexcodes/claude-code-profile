@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-const bashCompletion = `# ccp bash completion — source this from ~/.bashrc
+const bashCompletion = `# ccp bash completion: source this from ~/.bashrc
 _ccp_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   local prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -24,7 +24,7 @@ complete -F _ccp_complete ccp
 `
 
 const zshCompletion = `#compdef ccp
-# ccp zsh completion — source this from ~/.zshrc (or drop in fpath)
+# ccp zsh completion: source this from ~/.zshrc (or drop in fpath)
 _ccp() {
   local -a subcommands
   subcommands=(

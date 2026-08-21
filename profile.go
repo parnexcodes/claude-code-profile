@@ -15,7 +15,7 @@ import (
 //
 // Before launching claude, ccp removes every managed variable from the child
 // environment and then applies exactly what the profile defines. This makes
-// switching profiles deterministic — a ZAI key exported in your shell can
+// switching profiles deterministic; a ZAI key exported in your shell can
 // never leak into a Kimi session.
 // ---------------------------------------------------------------------------
 

@@ -10,7 +10,7 @@ import (
 
 const version = "0.1.0"
 
-const usage = `ccp — Claude Code profile launcher
+const usage = `ccp: Claude Code profile launcher
 
 Launch Claude Code against any Anthropic-compatible endpoint or through a
 locally-managed CLIProxyAPI, one env-var profile per model/backend.
@@ -252,13 +252,13 @@ func handleAdd(args []string) {
 		die("%v", err)
 	}
 	if fileExists(path) {
-		die("%s already exists — edit it directly or run `ccp edit %s`", path, name)
+		die("%s already exists; edit it directly or run `ccp edit %s`", path, name)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		die("%v", err)
 	}
 	okf("created %s", path)
-	infof("open it with %s — then try %s",
+	infof("open it with %s; then try %s",
 		paint(cBold, fmt.Sprintf("ccp edit %s", name)),
 		paint(cBold, fmt.Sprintf("ccp show %s", name)))
 }
@@ -269,7 +269,7 @@ func handleEdit(args []string) {
 		editor = lookPathAll("vi", "nano")
 	}
 	if editor == "" {
-		die("no editor found — set $EDITOR")
+		die("no editor found; set $EDITOR")
 	}
 	target := filepath.Join(ccpConfigDir(), "config.toml")
 	label := "config.toml"
@@ -278,7 +278,7 @@ func handleEdit(args []string) {
 		if !fileExists(path) {
 			cfg := mustLoadConfig()
 			if _, ok := cfg.Profiles[args[0]]; ok {
-				die("profile %q lives inside config.toml ([profiles.%s]) — edit that file directly",
+				die("profile %q lives inside config.toml ([profiles.%s]); edit that file directly",
 					args[0], args[0])
 			}
 			die("no such profile %q", args[0])
@@ -320,6 +320,6 @@ func handleRemove(name string) {
 		okf("removed profiles/%s.toml", name)
 		return
 	}
-	die("profile %q is defined in config.toml ([profiles.%s]) — remove that table by hand",
+	die("profile %q is defined in config.toml ([profiles.%s]); remove that table by hand",
 		name, name)
 }

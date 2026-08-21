@@ -1,9 +1,9 @@
-# ccp — Claude Code profile launcher
+# ccp: Claude Code profile launcher
 
 `ccp` launches Claude Code with a per-profile set of environment overrides
 (endpoint, auth, model aliases), so you can run any model behind an
-Anthropic-compatible API — or any OpenAI-style model through a locally managed
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — by just typing:
+Anthropic-compatible API; or any OpenAI-style model through a locally managed
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI); by just typing:
 
 ```
 ccp glm        # GLM via local CLIProxyAPI (proxy auto-started)
@@ -16,11 +16,11 @@ ccp official   # vanilla Claude Code with your Anthropic login
 For each launch ccp:
 
 1. **Strips** every managed variable (`ANTHROPIC_*`, `CLAUDE_CODE_SUBAGENT_MODEL`,
-   `API_TIMEOUT_MS`, Bedrock/Vertex toggles, …) from the inherited environment —
+   `API_TIMEOUT_MS`, Bedrock/Vertex toggles, …) from the inherited environment;
    a key exported for one provider can never leak into another session.
 2. **Applies** exactly what the profile defines.
 3. **Warns** if a Claude Code settings file pins any of those keys in its `env`
-   block — settings-file env beats process env, which would silently defeat ccp.
+   block; settings-file env beats process env, which would silently defeat ccp.
 4. **exec(2)s** claude in-place, so TTY handling, signals and exit codes are native.
 
 Env vars used (see [Claude Code docs](https://code.claude.com/docs/en/env-vars)):
@@ -90,7 +90,7 @@ State (pid file, logs, downloaded binaries) lives under `~/.local/state/ccp/`.
 
    ```sh
    ccp glm     # auto-starts the proxy when it's down; daemon keeps running
-               # between sessions — `ccp proxy stop` shuts it down
+               # between sessions; `ccp proxy stop` shuts it down
    ```
 
 Profiles of `type = "cliproxy"` point `ANTHROPIC_BASE_URL` at
@@ -132,7 +132,7 @@ Everything after the profile name goes to claude: `ccp kimi --resume -c`.
   between sessions (use `ccp proxy stop` to shut it down).
 - If `~/.claude/settings.json` (or project `.claude/settings*.json`) has an
   `env` block touching managed vars, ccp prints warnings and `ccp doctor`
-  fails — remove them there or profiles can't take effect.
+  fails; remove them there or profiles can't take effect.
 - `ANTHROPIC_BASE_URL` pointing away from api.anthropic.com disables some
   first-party features (Remote Control, MCP tool search) per Anthropic docs;
   set `ENABLE_TOOL_SEARCH=true` in `extra_env` if your proxy forwards

@@ -77,7 +77,7 @@ func startProxy(cfg *Config) error {
 	}
 	bin := findProxyBinary(cfg)
 	if bin == "" {
-		return fmt.Errorf("CLIProxyAPI binary not found — run %s or set binary = \"...\" under [proxy]",
+		return fmt.Errorf("CLIProxyAPI binary not found; run %s or set binary = \"...\" under [proxy]",
 			paint(cBold, "ccp proxy install"))
 	}
 
@@ -85,7 +85,7 @@ func startProxy(cfg *Config) error {
 	if !fileExists(cfgFile) && cfg.Proxy.ConfigFile == "" {
 		scaffoldProxyConfig(cfgFile)
 		infof("scaffolded starter proxy config at %s", paint(cBold, cfgFile))
-		infof("add OAuth accounts with the CLIProxyAPI login flow — see https://help.router-for.me/")
+		infof("add OAuth accounts with the CLIProxyAPI login flow; see https://help.router-for.me/")
 	}
 
 	logFile := proxyLogPath()
@@ -128,7 +128,7 @@ func startProxy(cfg *Config) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	stopQuietly(pid)
-	return fmt.Errorf("proxy did not become reachable within %s — check %s",
+	return fmt.Errorf("proxy did not become reachable within %s; check %s",
 		timeout, logFile)
 }
 
@@ -147,7 +147,7 @@ func stopProxy(cfg *Config) error {
 	pid, alive := pidFromFile()
 	if !alive {
 		if proxyReachable(cfg) {
-			return fmt.Errorf("%s answers but no valid pid file exists at %s — not started by ccp?",
+			return fmt.Errorf("%s answers but no valid pid file exists at %s (not started by ccp)?",
 				proxyBaseURL(cfg), proxyPidPath())
 		}
 		return fmt.Errorf("proxy is not running")

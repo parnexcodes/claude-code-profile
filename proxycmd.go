@@ -30,7 +30,7 @@ func handleProxy(args []string) {
 		up := proxyReachable(cfg)
 		switch {
 		case alive && up:
-			okf("running — pid %d, endpoint %s", pid, paint(cBold, proxyBaseURL(cfg)))
+			okf("running (pid %d), endpoint %s", pid, paint(cBold, proxyBaseURL(cfg)))
 			for _, l := range readLastLines(proxyLogPath(), 3) {
 				fmt.Printf("    %s\n", l)
 			}

@@ -30,7 +30,7 @@ func launch(name string, rest []string, quiet bool) {
 		die("%v", err)
 	}
 
-	// Settings-file env blocks beat process env — surface collisions now.
+	// Settings-file env blocks beat process env; surface collisions now.
 	var appliedKeys []string
 	for k := range built.Sets {
 		appliedKeys = append(appliedKeys, k)
@@ -43,7 +43,7 @@ func launch(name string, rest []string, quiet bool) {
 
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
-		die("claude not found on PATH — install Claude Code first")
+		die("claude not found on PATH; install Claude Code first")
 	}
 
 	if !quiet {
@@ -130,7 +130,7 @@ func listProfiles() {
 	names := cfg.ProfileNames()
 	def := cfg.defaultProfileName()
 	if len(names) == 0 {
-		infof("no profiles yet — create one with %s", paint(cBold, "ccp add <name>"))
+		infof("no profiles yet; create one with %s", paint(cBold, "ccp add <name>"))
 		return
 	}
 	width := 0
@@ -158,7 +158,7 @@ func listProfiles() {
 			marker, pad(n, width), pad(p.Type, 10), pad(modelPlain(model), 16), p.Description)
 	}
 	if def != "" {
-		fmt.Printf("\n%s\n", paint(cDim, fmt.Sprintf("  * default — bare `ccp` launches %q", def)))
+		fmt.Printf("\n%s\n", paint(cDim, fmt.Sprintf("  default: bare `ccp` launches %q", def)))
 	}
 }
 

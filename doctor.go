@@ -37,7 +37,7 @@ func runDoctor() {
 	fmt.Printf("\n%s\n", paint(cDim, "profiles"))
 	names := cfg.ProfileNames()
 	if len(names) == 0 {
-		check("warn", "no profiles defined — create one with `ccp add <name>`")
+		check("warn", "no profiles defined; create one with `ccp add <name>`")
 	}
 	for _, n := range names {
 		p := cfg.Profiles[n]
@@ -69,7 +69,7 @@ func runDoctor() {
 	if bin != "" {
 		check("ok", "binary: %s", bin)
 	} else if needsProxy {
-		check("warn", "binary not found — run `ccp proxy install`")
+		check("warn", "binary not found; run `ccp proxy install`")
 	}
 	reachable := proxyReachable(cfg)
 	if reachable {
@@ -77,11 +77,11 @@ func runDoctor() {
 		models, err := fetchProxyModels(cfg)
 		switch {
 		case err == nil && len(models) > 0:
-			check("ok", "%d models available — run `ccp proxy models` to list them", len(models))
+			check("ok", "%d models available; run `ccp proxy models` to list them", len(models))
 		case err != nil:
 			check("warn", "cannot list models: %v", err)
 		default:
-			check("warn", "proxy exposes no models yet — complete its OAuth login flow")
+			check("warn", "proxy exposes no models yet; complete its OAuth login flow")
 		}
 	} else if needsProxy {
 		check("warn", "endpoint: %s is down (auto_start=%v)", proxyBaseURL(cfg), cfg.Proxy.autostart())
@@ -119,7 +119,7 @@ func runDoctor() {
 	} else {
 		for _, c := range conflicts {
 			check("fail",
-				"%s pins env.%s=%s — settings files override process env, remove it or ccp profiles won't apply",
+				"%s pins env.%s=%s; settings files override process env, remove it or ccp profiles won't apply",
 				c.Path, c.Key, maskSecret(c.Value))
 		}
 	}
