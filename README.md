@@ -47,12 +47,20 @@ doesn't serve them. A profile without `model` inherits the `model` value from
 
 ## Install
 
-Requires Go 1.22+:
+One-liner (requires Go >= 1.25):
 
 ```sh
-make install        # → ~/.local/bin/ccp
-ccp completion zsh >> ~/.zshrc   # or bash: ccp completion bash >> ~/.bashrc
+curl -fsSL https://raw.githubusercontent.com/parnexcodes/claude-code-profile/master/install.sh | bash
 ```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/parnexcodes/claude-code-profile && cd claude-code-profile
+make install        # → ~/.local/bin/ccp
+```
+
+Override the install location or ref with `CCP_BINDIR=...` / `REF=...`.
 
 ## First run
 
