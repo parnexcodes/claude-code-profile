@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 const usage = `ccp: Claude Code profile launcher
 
@@ -25,6 +25,7 @@ commands:
   add [NAME] [--opts]     create a profile (interactive wizard when no args)
   edit [NAME]             open in $EDITOR (picker when no args)
   remove [NAME]           delete a profile (picker when no args)
+  default [PROFILE]       set or show default profile (bare ccp launches it; picker when no args)
   proxy status|start|stop|restart   manage local CLIProxyAPI
   proxy install           download the latest CLIProxyAPI release binary
   proxy init              scaffold a starter CLIProxyAPI config.yaml
@@ -126,6 +127,9 @@ parsed:
 		} else {
 			handleRemove(rest[0])
 		}
+
+	case "default", "set-default", "default-profile":
+		handleDefault(rest)
 
 	case "proxy":
 		handleProxy(rest)
@@ -715,6 +719,105 @@ func setDefaultProfile(name string) error {
 		content = fmt.Sprintf("default_profile = %q\n\n", name) + content
 	}
 	return os.WriteFile(cfgPath, []byte(content), 0o600)
+}
+
+func clearDefaultProfile() error {
+	cfgPath := filepath.Join(ccpConfigDir(), "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	if !strings.Contains(content, "default_profile") {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	var out []string
+	for _, l := range lines {
+		trim := strings.TrimSpace(l)
+		if strings.HasPrefix(trim, "default_profile") {
+			continue
+		}
+		out = append(out, l)
+	}
+	content = strings.Join(out, "\n")
+	return os.WriteFile(cfgPath, []byte(content), 0o600)
+}
+
+func handleDefault(args []string) {
+	if len(args) == 0 {
+		runDefaultPicker()
+		return
+	}
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		fmt.Fprintln(os.Stderr, "usage: ccp default [PROFILE]")
+		fmt.Fprintln(os.Stderr, "       ccp default --unset | --clear | --none  # clear default")
+		fmt.Fprintln(os.Stderr, "       ccp default                             # picker")
+		cfg := mustLoadConfig()
+		if def := cfg.defaultProfileName(); def != "" {
+			fmt.Fprintf(os.Stderr, "\ncurrent default: %q\n", def)
+		} else {
+			fmt.Fprintln(os.Stderr, "\ncurrent default: (none)")
+		}
+		return
+	}
+	if len(args) == 1 && (args[0] == "--unset" || args[0] == "--clear" || args[0] == "--none" || args[0] == "-u") {
+		if err := clearDefaultProfile(); err != nil {
+			die("%v", err)
+		}
+		okf("default profile cleared (bare `ccp` will require explicit profile)")
+		return
+	}
+	if len(args) != 1 {
+		die("usage: ccp default [PROFILE] [--unset]\n       ccp default --clear  # clear default")
+	}
+	name := args[0]
+	if strings.HasPrefix(name, "-") {
+		die("usage: ccp default [PROFILE] [--unset]")
+	}
+	cfg := mustLoadConfig()
+	if _, ok := cfg.Profiles[name]; !ok {
+		cfg.resolveProfile(name)
+	}
+	if err := setDefaultProfile(name); err != nil {
+		die("%v", err)
+	}
+	okf("default profile set to %q", name)
+}
+
+func runDefaultPicker() {
+	cfg := mustLoadConfig()
+	names := cfg.ProfileNames()
+	if len(names) == 0 {
+		die("no profiles available")
+	}
+	def := cfg.defaultProfileName()
+	// Build display options, marking current default.
+	options := make([]string, len(names))
+	defIdx := 0
+	for i, n := range names {
+		label := n
+		if n == def {
+			label = fmt.Sprintf("%s %s", n, paint(cDim, "(current default)"))
+			defIdx = i
+		} else if p, ok := cfg.Profiles[n]; ok && p.Description != "" {
+			label = fmt.Sprintf("%-12s %s", n, paint(cDim, p.Description))
+		}
+		options[i] = label
+	}
+	idx, err := selectOption("Select default profile (bare `ccp` launches it):", options, defIdx)
+	if err != nil {
+		return
+	}
+	name := names[idx]
+	if name == def {
+		infof("already default: %q", name)
+		return
+	}
+	if err := setDefaultProfile(name); err != nil {
+		die("%v", err)
+	}
+	okf("default profile set to %q", name)
 }
 
 func runRemovePicker() {

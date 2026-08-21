@@ -6,10 +6,17 @@ const bashCompletion = `# ccp bash completion: source this from ~/.bashrc
 _ccp_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   local prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local subcommands="list show add edit remove proxy doctor completion version help"
+  local subcommands="list show add edit remove default proxy doctor completion version help"
 
   if [[ "$prev" == "proxy" ]]; then
     COMPREPLY=( $(compgen -W "status start stop restart install init logs models" -- "$cur") )
+    return 0
+  fi
+
+  if [[ "$prev" == "show" || "$prev" == "edit" || "$prev" == "remove" || "$prev" == "default" ]]; then
+    local profiles
+    profiles="$(ccp __profiles 2>/dev/null)"
+    COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
     return 0
   fi
 
@@ -33,6 +40,7 @@ _ccp() {
     'add:create a new profile'
     'edit:edit config or a profile'
     'remove:delete a profile'
+    'default:set or show default profile'
     'proxy:manage local CLIProxyAPI'
     'doctor:validate the setup'
     'completion:print shell completion'
@@ -60,7 +68,7 @@ _ccp() {
     args)
       case "$words[1]" in
         proxy) _describe -t subcmds 'proxy command' proxy_cmds ;;
-        show|edit|remove) _describe -t profiles 'profile' profiles ;;
+        show|edit|remove|default) _describe -t profiles 'profile' profiles ;;
       esac
       ;;
   esac
