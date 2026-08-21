@@ -42,6 +42,8 @@ var managedVars = func() []string {
 		"API_TIMEOUT_MS",
 		"MAX_THINKING_TOKENS",
 		"CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+		"CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+		"CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
 		"DISABLE_PROMPT_CACHING",
 		// provider toggles that would break third-party routing
 		"CLAUDE_CODE_USE_BEDROCK",
@@ -266,8 +268,14 @@ func buildEnv(cfg *Config, name string, p *Profile) (*builtEnv, error) {
 	if p.MaxOutputTokens > 0 {
 		b.Sets["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = fmt.Sprint(p.MaxOutputTokens)
 	}
+	if p.MaxContextTokens > 0 {
+		b.Sets["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = fmt.Sprint(p.MaxContextTokens)
+	}
 	if p.DisablePromptCaching {
 		b.Sets["DISABLE_PROMPT_CACHING"] = "1"
+	}
+	if p.DisableUnknownModelWindowEnforcement {
+		b.Sets["CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT"] = "1"
 	}
 
 	// --- raw passthrough ----------------------------------------------------

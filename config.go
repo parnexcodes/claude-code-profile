@@ -43,10 +43,12 @@ type Profile struct {
 	AuthToken    string `toml:"auth_token"`     // literal value (discouraged)
 	APIKey       string `toml:"api_key"`        // literal value (discouraged)
 
-	APITimeoutMS         int  `toml:"api_timeout_ms"`
-	MaxThinkingTokens    int  `toml:"max_thinking_tokens"`
-	MaxOutputTokens      int  `toml:"max_output_tokens"`
-	DisablePromptCaching bool `toml:"disable_prompt_caching"`
+	APITimeoutMS                         int  `toml:"api_timeout_ms"`
+	MaxThinkingTokens                    int  `toml:"max_thinking_tokens"`
+	MaxOutputTokens                      int  `toml:"max_output_tokens"`
+	MaxContextTokens                     int  `toml:"max_context_tokens"` // CLAUDE_CODE_MAX_CONTEXT_TOKENS, e.g. 1000000 for 1M
+	DisablePromptCaching                 bool `toml:"disable_prompt_caching"`
+	DisableUnknownModelWindowEnforcement bool `toml:"disable_unknown_model_window_enforcement"` // CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
 
 	ExtraEnv map[string]string `toml:"extra_env"` // raw passthrough, ${VAR} expanded
 }

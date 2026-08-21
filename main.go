@@ -37,6 +37,7 @@ commands:
 profile options (profiles/<name>.toml):
   type                    "cliproxy" (via local CLIProxyAPI) | "anthropic" (direct)
   model                   ANTHROPIC_MODEL; falls back to ~/.claude/settings.json
+                          append [1m] for 1M context models, e.g. "stealth/ox-alpha[1m]"
   opus_model / sonnet_model / haiku_model / fable_model / subagent_model
                           alias overrides; default to ` + "`model`" + `
   base_url                endpoint override (cliproxy default: http://127.0.0.1:8317)
@@ -46,7 +47,9 @@ profile options (profiles/<name>.toml):
   api_timeout_ms          API_TIMEOUT_MS
   max_thinking_tokens     MAX_THINKING_TOKENS
   max_output_tokens       CLAUDE_CODE_MAX_OUTPUT_TOKENS
+  max_context_tokens      CLAUDE_CODE_MAX_CONTEXT_TOKENS (e.g. 1000000 for 1M)
   disable_prompt_caching  DISABLE_PROMPT_CACHING=1
+  disable_unknown_model_window_enforcement  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
   extra_env               raw map of additional KEY=VALUE (${VAR} expanded)
 
 examples:
@@ -161,6 +164,8 @@ type addOpts struct {
 	authTokenEnv, apiKeyEnv       string
 	haiku, sonnet, opus, subagent string
 	timeoutMS                     int
+	maxContextTokens              int
+	disableUnknownWindow          bool
 	extra                         []string // KEY=VAL
 }
 
@@ -169,7 +174,8 @@ func handleAdd(args []string) {
 		die("usage: ccp add NAME [--type cliproxy|anthropic] [--model ID] [--desc TEXT]\n" +
 			"              [--base-url URL] [--auth-token-env VAR] [--api-key-env VAR]\n" +
 			"              [--haiku-model ID] [--sonnet-model ID] [--opus-model ID]\n" +
-			"              [--subagent-model ID] [--timeout-ms N] [--set KEY=VAL]...")
+			"              [--subagent-model ID] [--timeout-ms N] [--max-context-tokens N|--1m]\n" +
+			"              [--disable-unknown-model-window-enforcement] [--set KEY=VAL]...")
 	}
 	name := args[0]
 	if !safeName(name) || name == "." || name == ".." {
@@ -210,6 +216,15 @@ func handleAdd(args []string) {
 			if n, err := fmt.Sscanf(v, "%d", &o.timeoutMS); err != nil || n != 1 {
 				die("--timeout-ms expects a number, got %q", v)
 			}
+		case "--max-context-tokens":
+			v := take()
+			if n, err := fmt.Sscanf(v, "%d", &o.maxContextTokens); err != nil || n != 1 {
+				die("--max-context-tokens expects a number, got %q", v)
+			}
+		case "--1m":
+			o.maxContextTokens = 1000000
+		case "--disable-unknown-model-window-enforcement":
+			o.disableUnknownWindow = true
 		case "--set":
 			o.extra = append(o.extra, take())
 		default:
@@ -245,6 +260,12 @@ func handleAdd(args []string) {
 	put("subagent_model", o.subagent)
 	if o.timeoutMS > 0 {
 		fmt.Fprintf(&b, "api_timeout_ms = %d\n", o.timeoutMS)
+	}
+	if o.maxContextTokens > 0 {
+		fmt.Fprintf(&b, "max_context_tokens = %d\n", o.maxContextTokens)
+	}
+	if o.disableUnknownWindow {
+		b.WriteString("disable_unknown_model_window_enforcement = true\n")
 	}
 	if len(o.extra) > 0 {
 		b.WriteString("\n[extra_env]\n")
@@ -381,7 +402,7 @@ func runAddWizard() {
 	}
 
 	desc := promptLine("Description", "")
-	model := promptLine("Model (blank to inherit from ~/.claude/settings.json)", "")
+	model := promptLine("Model (blank to inherit, append [1m] for 1M models)", "")
 
 	// auth
 	var authOpts []string
@@ -495,6 +516,17 @@ func runAddWizard() {
 			timeoutMS = 0
 		}
 	}
+	ctxStr := promptLine("Max context tokens (blank = 200k default, 1000000 or 1m for 1M)", "")
+	ctxTokens := 0
+	if ctxStr != "" {
+		if ctxStr == "1m" || ctxStr == "1M" {
+			ctxTokens = 1000000
+		} else if n, err := fmt.Sscanf(ctxStr, "%d", &ctxTokens); err != nil || n != 1 || ctxTokens < 0 {
+			warnf("invalid context tokens %q; using default", ctxStr)
+			ctxTokens = 0
+		}
+	}
+	disableUnknown := confirmYN("Disable unknown-model window enforcement (pre-2.1 behavior)?", false)
 
 	// summary
 	fmt.Println()
@@ -534,6 +566,12 @@ func runAddWizard() {
 	if timeoutMS > 0 {
 		fmt.Printf("  timeout:     %d ms\n", timeoutMS)
 	}
+	if ctxTokens > 0 {
+		fmt.Printf("  context:     %d tokens\n", ctxTokens)
+	}
+	if disableUnknown {
+		fmt.Printf("  window enforcement: disabled\n")
+	}
 	fmt.Println()
 
 	if !confirmYN(fmt.Sprintf("Create profile %q?", name), true) {
@@ -542,17 +580,19 @@ func runAddWizard() {
 	}
 
 	p := &Profile{
-		Description:  desc,
-		Type:         typ,
-		BaseURL:      baseURL,
-		Model:        model,
-		Auth:         auth,
-		AuthTokenEnv: authTokenEnv,
-		APIKeyEnv:    apiKeyEnv,
-		AuthToken:    authToken,
-		APIKey:       apiKey,
-		HaikuModel:   haiku,
-		APITimeoutMS: timeoutMS,
+		Description:                          desc,
+		Type:                                 typ,
+		BaseURL:                              baseURL,
+		Model:                                model,
+		Auth:                                 auth,
+		AuthTokenEnv:                         authTokenEnv,
+		APIKeyEnv:                            apiKeyEnv,
+		AuthToken:                            authToken,
+		APIKey:                               apiKey,
+		HaikuModel:                           haiku,
+		APITimeoutMS:                         timeoutMS,
+		MaxContextTokens:                     ctxTokens,
+		DisableUnknownModelWindowEnforcement: disableUnknown,
 	}
 	if err := saveProfile(name, p); err != nil {
 		die("%v", err)
@@ -635,8 +675,14 @@ func renderProfileToml(p *Profile) string {
 	if p.MaxOutputTokens > 0 {
 		fmt.Fprintf(&b, "max_output_tokens = %d\n", p.MaxOutputTokens)
 	}
+	if p.MaxContextTokens > 0 {
+		fmt.Fprintf(&b, "max_context_tokens = %d\n", p.MaxContextTokens)
+	}
 	if p.DisablePromptCaching {
 		b.WriteString("disable_prompt_caching = true\n")
+	}
+	if p.DisableUnknownModelWindowEnforcement {
+		b.WriteString("disable_unknown_model_window_enforcement = true\n")
 	}
 	if len(p.ExtraEnv) > 0 {
 		b.WriteString("\n[extra_env]\n")
