@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -100,10 +99,10 @@ func startProxy(cfg *Config) error {
 
 	args := append([]string{"--config", cfgFile}, cfg.Proxy.ExtraArgs...)
 	cmd := exec.Command(bin, args...)
+	detach(cmd)
 	cmd.Stdin = nil
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting %s: %w", bin, err)
@@ -119,7 +118,7 @@ func startProxy(cfg *Config) error {
 			return nil
 		}
 		// did it die immediately?
-		if procCmdline(pid) == "" {
+		if !procAlive(pid) {
 			err := cmd.Wait()
 			tail := tailLines(logFile, 12)
 			return fmt.Errorf("proxy exited immediately (%v). Last log lines from %s:\n%s",
@@ -133,14 +132,14 @@ func startProxy(cfg *Config) error {
 }
 
 func stopQuietly(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	_ = killProcessGroup(pid)
 	for i := 0; i < 50; i++ {
-		if procCmdline(pid) == "" {
+		if !procAlive(pid) {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = forceKillProcessGroup(pid)
 }
 
 func stopProxy(cfg *Config) error {

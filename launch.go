@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // launch runs claude with the profile's environment applied via exec(2),
@@ -52,7 +51,7 @@ func launch(name string, rest []string, quiet bool) {
 
 	env := assembleEnv(os.Environ(), built.Strips, built.Sets)
 	argv := append([]string{"claude"}, rest...)
-	if err := syscall.Exec(claudePath, argv, env); err != nil {
+	if err := runReplacing(claudePath, argv, env); err != nil {
 		die("exec %s: %v", claudePath, err)
 	}
 }

@@ -5,10 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
-const version = "0.1.0"
+var version = "0.1.0"
 
 const usage = `ccp: Claude Code profile launcher
 
@@ -295,7 +294,7 @@ func handleEdit(args []string) {
 	infof("editing %s", paint(cBold, label))
 	env := os.Environ()
 	argv := []string{filepath.Base(editor), target}
-	if err := syscall.Exec(editor, argv, env); err != nil {
+	if err := runReplacing(editor, argv, env); err != nil {
 		die("exec %s: %v", editor, err)
 	}
 }
