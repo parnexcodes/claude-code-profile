@@ -390,14 +390,18 @@ func runAddWizard() {
 		authOpts = []string{
 			"auto - use proxy config api-keys[0] (recommended)",
 			"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+			"bearer token literal (paste key, stored chmod 600)",
 			"api key from env var (ANTHROPIC_API_KEY)",
+			"api key literal (paste key, stored chmod 600)",
 		}
 		authDefault = 0
 	} else {
 		authOpts = []string{
 			"none - use Claude login (for official)",
 			"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+			"bearer token literal (paste key, stored chmod 600)",
 			"api key from env var (ANTHROPIC_API_KEY)",
+			"api key literal (paste key, stored chmod 600)",
 		}
 		authDefault = 0
 	}
@@ -405,7 +409,7 @@ func runAddWizard() {
 	if err != nil {
 		return
 	}
-	var auth, authTokenEnv, apiKeyEnv string
+	var auth, authTokenEnv, apiKeyEnv, authToken, apiKey string
 	if typ == "cliproxy" {
 		switch authChoice {
 		case 0:
@@ -420,11 +424,27 @@ func runAddWizard() {
 			}
 		case 2:
 			for {
+				authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
+				if authToken != "" {
+					break
+				}
+				warnf("token cannot be empty")
+			}
+		case 3:
+			for {
 				apiKeyEnv = promptLine("Env var holding API key", "")
 				if apiKeyEnv != "" {
 					break
 				}
 				warnf("env var name cannot be empty")
+			}
+		case 4:
+			for {
+				apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
+				if apiKey != "" {
+					break
+				}
+				warnf("key cannot be empty")
 			}
 		}
 	} else {
@@ -441,11 +461,27 @@ func runAddWizard() {
 			}
 		case 2:
 			for {
+				authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
+				if authToken != "" {
+					break
+				}
+				warnf("token cannot be empty")
+			}
+		case 3:
+			for {
 				apiKeyEnv = promptLine("Env var holding API key", "")
 				if apiKeyEnv != "" {
 					break
 				}
 				warnf("env var name cannot be empty")
+			}
+		case 4:
+			for {
+				apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
+				if apiKey != "" {
+					break
+				}
+				warnf("key cannot be empty")
 			}
 		}
 	}
@@ -481,8 +517,12 @@ func runAddWizard() {
 		fmt.Printf("  auth:        none\n")
 	case authTokenEnv != "":
 		fmt.Printf("  auth:        bearer from $%s\n", authTokenEnv)
+	case authToken != "":
+		fmt.Printf("  auth:        bearer literal %s\n", maskSecret(authToken))
 	case apiKeyEnv != "":
 		fmt.Printf("  auth:        api key from $%s\n", apiKeyEnv)
+	case apiKey != "":
+		fmt.Printf("  auth:        api key literal %s\n", maskSecret(apiKey))
 	default:
 		if typ == "cliproxy" {
 			fmt.Printf("  auth:        auto (proxy api-keys[0])\n")
@@ -509,6 +549,8 @@ func runAddWizard() {
 		Auth:         auth,
 		AuthTokenEnv: authTokenEnv,
 		APIKeyEnv:    apiKeyEnv,
+		AuthToken:    authToken,
+		APIKey:       apiKey,
 		HaikuModel:   haiku,
 		APITimeoutMS: timeoutMS,
 	}
