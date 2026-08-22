@@ -122,49 +122,73 @@ model       = "deepseek-chat"
 
 ### Pooling multiple subscriptions under one profile
 
-Combine N interchangeable subscriptions (e.g., three Codex accounts or Go plans)
-into a single `ccp codex` command that round-robins per launch:
+Combine N interchangeable subscriptions for the same provider into one
+`ccp` command that round-robins per launch. How you configure it depends on
+the auth type.
+
+#### OAuth accounts (Codex, ChatGPT, etc.) via CLIProxyAPI — let the proxy pool
+
+Codex/ChatGPT logins are OAuth and have no direct `anthropic` endpoint — they
+are accessed only through CLIProxyAPI. Add each login to CLIProxyAPI and use a
+single `cliproxy` profile — no `[[accounts]]` needed:
 
 ```toml
 # ~/.config/ccp/profiles/codex.toml
-description = "Codex ×3 (round-robin)"
-type     = "anthropic"
-base_url = "https://api.codex.example/anthropic"
-model    = "gpt-5-codex"
-
-[[accounts]]
-auth_token_env = "CODEX_TOKEN_A"
-
-[[accounts]]
-auth_token_env = "CODEX_TOKEN_B"
-
-[[accounts]]
-auth_token_env = "CODEX_TOKEN_C"
-# Optional per-account overrides:
-# base_url = "https://api-b.example/v1"
-# name = "secondary"
+description = "Codex via CLIProxyAPI (OAuth)"
+type = "cliproxy"
+model = "gpt-5-codex"
+# Add each Codex OAuth login via CLIProxyAPI (see https://help.router-for.me/
+# and ~/.config/ccp/cliproxy/config.yaml -> auth-dir).
+# CLIProxyAPI pools them per-request (weighted-round-robin) internally.
 ```
 
-`ccp codex` now cycles `A → B → C → A …` — one account per session, counter
-persisted at `~/.local/state/ccp/routing/codex.json` so successive shells keep
+`ccp codex` then uses the proxy; the proxy handles rotation and token refresh.
+
+#### Direct Anthropic-compatible relays with static keys/tokens — `ccp` round-robins
+
+For relays that expose `https://.../anthropic` with static `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN` values, define an `anthropic` pool:
+
+```toml
+# ~/.config/ccp/profiles/relay.toml
+description = "Relay ×3 (round-robin)"
+type = "anthropic"
+base_url = "https://api.example.com/anthropic"
+model = "my-model"
+
+[[accounts]]
+api_key_env = "RELAY_KEY_A"
+
+[[accounts]]
+api_key_env = "RELAY_KEY_B"
+
+[[accounts]]
+api_key_env = "RELAY_KEY_C"
+# Optional per-account overrides:
+# base_url = "https://api-b.example.com/anthropic"
+# name = "secondary"
+# auth_token_env = "RELAY_TOKEN_D"  # bearer variant also allowed
+```
+
+`ccp relay` now cycles `A → B → C → A …` — one account per session, counter
+persisted at `~/.local/state/ccp/routing/relay.json` so successive shells keep
 rotating. Mixing `auth_token_env` / `api_key_env` / literals in one pool is
-allowed. `ccp show codex` lists the pool (masked), `ccp list` shows `×3`, and
-the launch banner prints `account 2/3 ($CODEX_TOKEN_B)`.
+allowed. `ccp show relay` lists the pool (masked), `ccp list` shows `×3`, and
+the launch banner prints `account 2/3 ($RELAY_KEY_B)`.
 
 Scripted creation:
 
 ```sh
-ccp add codex --type anthropic \
-  --account auth_token_env=CODEX_TOKEN_A \
-  --account auth_token_env=CODEX_TOKEN_B \
-  --account auth_token_env=CODEX_TOKEN_C
+ccp add relay --type anthropic \
+  --account api_key_env=RELAY_KEY_A \
+  --account api_key_env=RELAY_KEY_B \
+  --account api_key_env=RELAY_KEY_C
 ```
 
-For `type = "cliproxy"` this is complementary to CLIProxyAPI's own
-`auth-dir` multi-account pooling: keep adding OAuth logins to
-`~/.cli-proxy-api` and CLIProxyAPI handles per-request `weighted-round-robin`
-internally, while `ccp`'s pool covers the bearer `api-keys` layer and any
-direct `anthropic` relays where no usage-weighted signal exists.
+> `ccp` pooling and CLIProxyAPI's own `auth-dir` pooling are complementary:
+> use the proxy's `weighted-round-robin` for OAuth upstream accounts, and use
+> `ccp`'s `[[accounts]]` pool for the bearer `api-keys` layer or any direct
+> `anthropic` relay where no usage-weighted signal exists.
 
 `${VAR}` references are expanded anywhere in profile values, so even endpoints
 can come from your shell environment.
