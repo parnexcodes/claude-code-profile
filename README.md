@@ -120,6 +120,52 @@ api_key_env = "DEEPSEEK_KEY"          # resolved at launch, nothing stored on di
 model       = "deepseek-chat"
 ```
 
+### Pooling multiple subscriptions under one profile
+
+Combine N interchangeable subscriptions (e.g., three Codex accounts or Go plans)
+into a single `ccp codex` command that round-robins per launch:
+
+```toml
+# ~/.config/ccp/profiles/codex.toml
+description = "Codex ×3 (round-robin)"
+type     = "anthropic"
+base_url = "https://api.codex.example/anthropic"
+model    = "gpt-5-codex"
+
+[[accounts]]
+auth_token_env = "CODEX_TOKEN_A"
+
+[[accounts]]
+auth_token_env = "CODEX_TOKEN_B"
+
+[[accounts]]
+auth_token_env = "CODEX_TOKEN_C"
+# Optional per-account overrides:
+# base_url = "https://api-b.example/v1"
+# name = "secondary"
+```
+
+`ccp codex` now cycles `A → B → C → A …` — one account per session, counter
+persisted at `~/.local/state/ccp/routing/codex.json` so successive shells keep
+rotating. Mixing `auth_token_env` / `api_key_env` / literals in one pool is
+allowed. `ccp show codex` lists the pool (masked), `ccp list` shows `×3`, and
+the launch banner prints `account 2/3 ($CODEX_TOKEN_B)`.
+
+Scripted creation:
+
+```sh
+ccp add codex --type anthropic \
+  --account auth_token_env=CODEX_TOKEN_A \
+  --account auth_token_env=CODEX_TOKEN_B \
+  --account auth_token_env=CODEX_TOKEN_C
+```
+
+For `type = "cliproxy"` this is complementary to CLIProxyAPI's own
+`auth-dir` multi-account pooling: keep adding OAuth logins to
+`~/.cli-proxy-api` and CLIProxyAPI handles per-request `weighted-round-robin`
+internally, while `ccp`'s pool covers the bearer `api-keys` layer and any
+direct `anthropic` relays where no usage-weighted signal exists.
+
 `${VAR}` references are expanded anywhere in profile values, so even endpoints
 can come from your shell environment.
 
@@ -127,15 +173,15 @@ can come from your shell environment.
 
 ```
 ccp [-q] [PROFILE] [args…]   launch claude; trailing args pass straight through
-ccp list                     list profiles ("*" = default)
-ccp show PROFILE             exact env a launch would apply (secrets masked)
-ccp add [NAME] [--type …] [--model …] [--api-key-env …] [--set K=V] …
-                             # no args → interactive wizard (arrow keys / numbers)
+ccp list                     list profiles ("*" = default, "×N" = pooled)
+ccp show PROFILE             exact env a launch would apply (secrets masked, pools enumerated)
+ccp add [NAME] [--type …] [--model …] [--api-key-env …] [--account KEY=VAL[,KEY=VAL...]] [--set K=V] …
+                             # no args → interactive wizard (arrow keys / numbers, prompts for pool)
 ccp edit [NAME]              $EDITOR on profiles/NAME.toml or config.toml
                              # no args → picker
-ccp remove [NAME]            delete a profile (picker when no args)
+ccp remove [NAME]            delete a profile (picker when no args, also clears routing state)
 ccp proxy status|start|stop|restart|install|init|logs|models
-ccp doctor                   validate binaries, secrets, conflicts, connectivity
+ccp doctor                   validate binaries, secrets, conflicts, connectivity (pool-aware)
 ```
 
 `ccp add` without arguments walks through name, type, model, auth and
@@ -156,3 +202,32 @@ Everything after the profile name goes to claude: `ccp kimi --resume -c`.
   set `ENABLE_TOOL_SEARCH=true` in `extra_env` if your proxy forwards
   `tool_reference` blocks.
 - Secrets are referenced, never stored: prefer `auth_token_env`/`api_key_env`.
+
+## Development
+
+Project layout:
+
+```
+cmd/ccp/main.go        # thin entrypoint
+internal/config        # config loading, paths, validation
+internal/profile       # env assembly, auth, managed vars
+internal/routing       # round-robin state
+internal/proxy         # daemon lifecycle, models
+internal/settings      # Claude settings interop
+internal/cli           # launch, show/list, doctor, completion
+internal/tui           # prompts, selection
+internal/util          # helpers
+```
+
+Build and test:
+
+```sh
+make build        # go build -o ccp ./cmd/ccp
+make vet          # go vet ./...
+make fmt          # gofmt -w cmd internal .
+make test         # go test ./... -count=1
+make test-race    # go test ./... -count=1 -race
+go test ./... -count=1 -race  # CI runs this on Linux
+```
+
+All tests are hermetic (`t.TempDir()` + `CCP_HOME`/`CCP_STATE_HOME`/`HOME`); no proxy or `claude` binary required.

@@ -1,0 +1,6 @@
+  NAME          TYPE       MODEL            DESCRIPTION
+ *glm       cliproxy   glm-4.6          GLM via local CLIProxyAPI
+  kimi      cliproxy   kimi-k3          Kimi via local CLIProxyAPI
+  official  anthropic  claude-sonnet-4 (from settings.json) Official Anthropic (vanilla Claude Code)
+
+  default: bare `ccp` launches "glm"

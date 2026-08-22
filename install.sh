@@ -100,7 +100,7 @@ require_go() {
 build_source() { # <srcdir>
 	require_go
 	log "compiling"
-	(cd "$1" && go build -o "${WORK}/ccp_bin${EXT}" .) || die "go build failed"
+	(cd "$1" && go build -o "${WORK}/ccp_bin${EXT}" ./cmd/ccp) || die "go build failed"
 }
 
 download_source() { # <ref> : unpack branch/tag tarball into WORK/src

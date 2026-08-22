@@ -2,3 +2,5 @@
 /dist/
 /bin/
 /dist/
+.claude/
+.opencode/

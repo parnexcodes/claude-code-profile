@@ -38,8 +38,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test ./... -count=1 -race
+        if: runner.os == 'Linux'
+
+      - name: Test (non-Linux)
+        run: go test ./... -count=1
+        if: runner.os != 'Linux'
+
       - name: Build & smoke test
         run: |
-          go build -o ccp_test .
+          go build -o ccp_test ./cmd/ccp
           ./ccp_test version
         shell: bash

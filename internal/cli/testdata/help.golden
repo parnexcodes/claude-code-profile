@@ -1,0 +1,54 @@
+ccp: Claude Code profile launcher
+
+Launch Claude Code against any Anthropic-compatible endpoint or through a
+locally-managed CLIProxyAPI, one env-var profile per model/backend.
+
+usage:
+  ccp [-q] [PROFILE] [args…]     launch claude with PROFILE (default if omitted);
+                                 everything after PROFILE is passed to claude
+  ccp <command> [args…]
+
+commands:
+  list                    list profiles ("*" marks the default)
+  show PROFILE            print the exact environment a launch would apply
+  add [NAME] [--opts]     create a profile (interactive wizard when no args)
+  edit [NAME]             open in $EDITOR (picker when no args)
+  remove [NAME]           delete a profile (picker when no args)
+  default [PROFILE]       set or show default profile (bare ccp launches it; picker when no args)
+  proxy status|start|stop|restart   manage local CLIProxyAPI
+  proxy install           download the latest CLIProxyAPI release binary
+  proxy init              scaffold a starter CLIProxyAPI config.yaml
+  proxy logs [-n N] [-f]  show (or follow) proxy logs
+  proxy models            list model IDs the proxy exposes
+  doctor                  validate the whole setup
+  completion zsh|bash     print shell completion script
+  version                 print version
+
+profile options (profiles/<name>.toml):
+  type                    "cliproxy" (via local CLIProxyAPI) | "anthropic" (direct)
+  model                   ANTHROPIC_MODEL; falls back to ~/.claude/settings.json
+                          append [1m] for 1M context models, e.g. "stealth/ox-alpha[1m]"
+  opus_model / sonnet_model / haiku_model / fable_model / subagent_model
+                          alias overrides; default to `model`
+  base_url                endpoint override (cliproxy default: http://127.0.0.1:8317)
+  auth                    "bearer" → ANTHROPIC_AUTH_TOKEN | "x-api-key" → ANTHROPIC_API_KEY | "none"
+  auth_token_env          name of env var holding a bearer token (recommended)
+  api_key_env             name of env var holding an API key (recommended)
+  api_timeout_ms          API_TIMEOUT_MS
+  max_thinking_tokens     MAX_THINKING_TOKENS
+  max_output_tokens       CLAUDE_CODE_MAX_OUTPUT_TOKENS
+  max_context_tokens      CLAUDE_CODE_MAX_CONTEXT_TOKENS (e.g. 1000000 for 1M)
+  disable_prompt_caching  DISABLE_PROMPT_CACHING=1
+  disable_unknown_model_window_enforcement  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+  extra_env               raw map of additional KEY=VALUE (${VAR} expanded)
+
+examples:
+  ccp glm                       # GLM via CLIProxyAPI (auto-starts it)
+  ccp kimi --resume             # pass flags straight through to claude
+  ccp official                  # vanilla Claude Code with your login
+  ZAI_API_KEY=sk-… ccp glm      # secrets resolved from the environment at launch
+
+files:
+  config:   /tmp/tmp.emxlnthRH7/config.toml
+  profiles: /tmp/tmp.emxlnthRH7/profiles/*.toml
+  state:    /tmp/tmp.lvF9CWrQtD
