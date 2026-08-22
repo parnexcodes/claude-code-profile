@@ -26,9 +26,17 @@ func TestFindProxyBinary_Precedence(t *testing.T) {
 	// create fake binaries
 	binConfig := filepath.Join(dir, "custom-proxy")
 	os.WriteFile(binConfig, []byte("#!/bin/sh\necho hi"), 0o755)
-	binPath := filepath.Join(dir, "cli-proxy-api")
+	binName := "cli-proxy-api"
+	if runtime.GOOS == "windows" {
+		binName = "cli-proxy-api.exe"
+	}
+	binPath := filepath.Join(dir, binName)
 	os.WriteFile(binPath, []byte("#!/bin/sh\necho hi"), 0o755)
 	binLocal := filepath.Join(home, ".local", "bin", "cli-proxy-api")
+	if runtime.GOOS == "windows" {
+		// On Windows the local/state binaries are checked directly via IsExecutable, not via PATH, so keep plain name.
+		// But keep original name for test determinism.
+	}
 	os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755)
 	os.WriteFile(binLocal, []byte("#!/bin/sh"), 0o755)
 	binState := filepath.Join(state, "bin", "cli-proxy-api")
@@ -46,8 +54,16 @@ func TestFindProxyBinary_Precedence(t *testing.T) {
 	}
 	// case 2: config binary empty, PATH wins
 	cfg.Proxy.Binary = ""
-	if got := FindProxyBinary(cfg); got != binPath {
-		t.Fatalf("PATH: got %q want %q", got, binPath)
+	gotPath := FindProxyBinary(cfg)
+	// On Windows LookPath returns the .exe path, so compare base names loosely.
+	if runtime.GOOS == "windows" {
+		if gotPath != binPath && gotPath != filepath.Join(dir, "cli-proxy-api") {
+			t.Fatalf("PATH: got %q want %q", gotPath, binPath)
+		}
+	} else {
+		if gotPath != binPath {
+			t.Fatalf("PATH: got %q want %q", gotPath, binPath)
+		}
 	}
 	// remove PATH binary, should pick ~/.local/bin
 	os.Remove(binPath)

@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -60,7 +61,7 @@ func TestBootstrap_CreatesSeedsAndNotOverwrite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", path, err)
 		}
-		if fi.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 			t.Fatalf("perm %o want 600", fi.Mode().Perm())
 		}
 	}
@@ -77,7 +78,7 @@ func TestBootstrap_CreatesSeedsAndNotOverwrite(t *testing.T) {
 	}
 	// ensure config.toml not overwritten
 	fi, _ := os.Stat(filepath.Join(dir, "config.toml"))
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("config perm %o", fi.Mode().Perm())
 	}
 	_ = orig

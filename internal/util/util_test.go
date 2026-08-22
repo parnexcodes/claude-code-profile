@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -129,13 +130,18 @@ func TestFileExistsAndIsExecutable(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
+	// On Windows the executable bit is not meaningful; any existing file is considered executable.
+	wantNoExec := false
+	if runtime.GOOS == "windows" {
+		wantNoExec = true
+	}
 	tests := []struct {
 		name       string
 		path       string
 		wantExists bool
 		wantExec   bool
 	}{
-		{name: "exists_no_exec", path: file, wantExists: true, wantExec: false},
+		{name: "exists_no_exec", path: file, wantExists: true, wantExec: wantNoExec},
 		{name: "exists_exec", path: execFile, wantExists: true, wantExec: true},
 		{name: "missing", path: filepath.Join(dir, "missing"), wantExists: false, wantExec: false},
 		{name: "dir", path: dir, wantExists: false, wantExec: false},

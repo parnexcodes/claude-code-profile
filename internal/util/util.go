@@ -73,6 +73,9 @@ func Okf(format string, a ...any) {
 // ---------------------------------------------------------------------------
 
 func HomeDir() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
 	h, err := os.UserHomeDir()
 	if err != nil {
 		Die("cannot determine home directory: %v", err)
@@ -149,7 +152,18 @@ func FileExists(p string) bool {
 
 func IsExecutable(p string) bool {
 	fi, err := os.Stat(p)
-	return err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	// On Windows the executable bit is not meaningful; existence is enough.
+	if isWindows() {
+		return true
+	}
+	return fi.Mode()&0o111 != 0
+}
+
+func isWindows() bool {
+	return os.PathSeparator == '\\'
 }
 
 // ---------------------------------------------------------------------------

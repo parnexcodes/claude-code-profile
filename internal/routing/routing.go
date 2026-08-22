@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type routingState struct {
@@ -41,6 +42,8 @@ func readRoutingCounter(profile string) int {
 	return s.Counter
 }
 
+var routingMu sync.Mutex
+
 func nextRoutingIndex(profile string, poolSize int) (int, error) {
 	if poolSize <= 0 {
 		return 0, nil
@@ -49,6 +52,9 @@ func nextRoutingIndex(profile string, poolSize int) (int, error) {
 		return 0, err
 	}
 	path := routingStatePath(profile)
+	// In-process mutex for concurrency within the same process (covers Windows where flock is no-op).
+	routingMu.Lock()
+	defer routingMu.Unlock()
 	// Acquire file lock best-effort on unix (helpers in daemon_unix.go).
 	unlock := lockRoutingState(path)
 	defer unlock()
