@@ -141,7 +141,6 @@ func extractText(content interface{}) string {
 
 func anthropicToResponsesInput(body map[string]interface{}) string {
 	var parts []string
-	// system
 	if sys, ok := body["system"]; ok {
 		var sysText string
 		switch v := sys.(type) {
@@ -160,7 +159,6 @@ func anthropicToResponsesInput(body map[string]interface{}) string {
 			parts = append(parts, fmt.Sprintf("System: %s", sysText))
 		}
 	}
-	// messages
 	if msgs, ok := body["messages"].([]interface{}); ok {
 		for _, mm := range msgs {
 			if m, ok := mm.(map[string]interface{}); ok {
@@ -168,13 +166,80 @@ func anthropicToResponsesInput(body map[string]interface{}) string {
 				if role == "" {
 					role = "user"
 				}
-				text := extractText(m["content"])
-				if strings.TrimSpace(text) != "" {
-					roleTitle := role
-					if len(roleTitle) > 0 {
-						roleTitle = strings.ToUpper(roleTitle[:1]) + roleTitle[1:]
+				content := m["content"]
+				if arr, ok := content.([]interface{}); ok {
+					var textParts []string
+					var toolUses []string
+					var toolResults []string
+					for _, blk := range arr {
+						if b, ok := blk.(map[string]interface{}); ok {
+							t, _ := b["type"].(string)
+							switch t {
+							case "text":
+								if txt, ok := b["text"].(string); ok {
+									textParts = append(textParts, txt)
+								}
+							case "tool_use":
+								name, _ := b["name"].(string)
+								id, _ := b["id"].(string)
+								inp := b["input"]
+								inpStr := ""
+								if inp != nil {
+									if data, err := json.Marshal(inp); err == nil {
+										inpStr = string(data)
+									} else {
+										inpStr = fmt.Sprint(inp)
+									}
+								}
+								toolUses = append(toolUses, fmt.Sprintf("ToolUse %s (%s): %s", name, id, inpStr))
+							case "tool_result":
+								toolUseID, _ := b["tool_use_id"].(string)
+								c := b["content"]
+								txt := extractText(c)
+								if txt == "" {
+									if s, ok := c.(string); ok {
+										txt = s
+									} else if c != nil {
+										txt = fmt.Sprint(c)
+									}
+								}
+								toolResults = append(toolResults, fmt.Sprintf("ToolResult %s: %s", toolUseID, txt))
+							case "image":
+								textParts = append(textParts, "[image]")
+							default:
+								if txt, ok := b["text"].(string); ok {
+									textParts = append(textParts, txt)
+								} else if c, ok := b["content"].(string); ok {
+									textParts = append(textParts, c)
+								} else {
+									textParts = append(textParts, fmt.Sprint(b))
+								}
+							}
+						} else if s, ok := blk.(string); ok {
+							textParts = append(textParts, s)
+						}
 					}
-					parts = append(parts, fmt.Sprintf("%s: %s", roleTitle, text))
+					var combined []string
+					if len(textParts) > 0 {
+						combined = append(combined, strings.Join(textParts, "\n"))
+					}
+					if len(toolUses) > 0 {
+						combined = append(combined, strings.Join(toolUses, "\n"))
+					}
+					if len(toolResults) > 0 {
+						combined = append(combined, strings.Join(toolResults, "\n"))
+					}
+					text := strings.Join(combined, "\n")
+					if strings.TrimSpace(text) != "" {
+						roleTitle := strings.ToUpper(role[:1]) + role[1:]
+						parts = append(parts, fmt.Sprintf("%s: %s", roleTitle, text))
+					}
+				} else {
+					text := extractText(content)
+					if strings.TrimSpace(text) != "" {
+						roleTitle := strings.ToUpper(role[:1]) + role[1:]
+						parts = append(parts, fmt.Sprintf("%s: %s", roleTitle, text))
+					}
 				}
 			}
 		}
@@ -298,14 +363,13 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if maxTokens == 0 {
-		maxTokens = 1024
+		maxTokens = 16384
 	}
-	// Some Responses API models require at least 1024 tokens due to reasoning
 	if maxTokens < 1024 {
 		maxTokens = 1024
 	}
-	if maxTokens > 4000 {
-		maxTokens = 4000
+	if maxTokens > 16384 {
+		maxTokens = 16384
 	}
 	input := anthropicToResponsesInput(body)
 	up := h.lookup(model)
@@ -313,25 +377,72 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"unknown provider for model `+model+`"}}`, 400)
 		return
 	}
-	// Call upstream responses
 	upstreamModel := up.Model
 	if upstreamModel == "" {
 		upstreamModel = model
 	}
 	base := strings.TrimRight(up.BaseURL, "/")
-	// ensure base ends not with /responses? we expect base like https://opencode.ai/zen/go/v1
-	// So endpoint is base + "/responses"
 	endpoint := base + "/responses"
 	if strings.HasSuffix(base, "/responses") {
 		endpoint = base
 	} else if strings.HasSuffix(base, "/chat/completions") {
-		// shouldn't happen for responses, but handle
 		endpoint = strings.TrimSuffix(base, "/chat/completions") + "/responses"
+	}
+	var upstreamTools []map[string]interface{}
+	if tools, ok := body["tools"].([]interface{}); ok {
+		for _, t := range tools {
+			if tm, ok := t.(map[string]interface{}); ok {
+				name, _ := tm["name"].(string)
+				desc, _ := tm["description"].(string)
+				schema := tm["input_schema"]
+				if schema == nil {
+					schema = tm["parameters"]
+				}
+				if schema == nil {
+					schema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				}
+				if sm, ok := schema.(map[string]interface{}); ok {
+					if _, hasType := sm["type"]; !hasType {
+						sm["type"] = "object"
+					}
+				}
+				upstreamTools = append(upstreamTools, map[string]interface{}{
+					"type":        "function",
+					"name":        name,
+					"description": desc,
+					"parameters":  schema,
+				})
+			}
+		}
 	}
 	payload := map[string]interface{}{
 		"model":             upstreamModel,
 		"input":             input,
 		"max_output_tokens": maxTokens,
+	}
+	if len(upstreamTools) > 0 {
+		payload["tools"] = upstreamTools
+		payload["parallel_tool_calls"] = true
+		if tc, ok := body["tool_choice"].(map[string]interface{}); ok {
+			if t, ok := tc["type"].(string); ok {
+				switch t {
+				case "auto":
+					payload["tool_choice"] = "auto"
+				case "any", "required":
+					payload["tool_choice"] = "required"
+				case "tool":
+					if name, ok := tc["name"].(string); ok {
+						payload["tool_choice"] = map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": name}}
+					} else {
+						payload["tool_choice"] = "auto"
+					}
+				default:
+					payload["tool_choice"] = "auto"
+				}
+			}
+		} else if tc, ok := body["tool_choice"].(string); ok {
+			payload["tool_choice"] = tc
+		}
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payloadBytes))
@@ -342,7 +453,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+up.APIKey)
 	req.Header.Set("User-Agent", "ccp-responses-shim/1.0")
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -393,8 +504,9 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// parse output
+	// parse output - handle both output_text and function_call
 	var outputText string
+	var toolUses []map[string]interface{}
 	var usageIn, usageOut int
 	if usage, ok := upstream["usage"].(map[string]interface{}); ok {
 		if v, ok := usage["input_tokens"].(float64); ok {
@@ -407,30 +519,57 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if out, ok := upstream["output"].([]interface{}); ok {
 		for _, item := range out {
 			if m, ok := item.(map[string]interface{}); ok {
-				if m["type"] == "message" && m["role"] == "assistant" {
-					if content, ok := m["content"].([]interface{}); ok {
-						for _, c := range content {
-							if cc, ok := c.(map[string]interface{}); ok {
-								if cc["type"] == "output_text" {
-									if txt, ok := cc["text"].(string); ok {
-										outputText += txt
+				switch m["type"] {
+				case "message":
+					if m["role"] == "assistant" {
+						if content, ok := m["content"].([]interface{}); ok {
+							for _, c := range content {
+								if cc, ok := c.(map[string]interface{}); ok {
+									if cc["type"] == "output_text" {
+										if txt, ok := cc["text"].(string); ok {
+											outputText += txt
+										}
 									}
 								}
 							}
 						}
 					}
+				case "function_call":
+					name, _ := m["name"].(string)
+					callID, _ := m["call_id"].(string)
+					if callID == "" {
+						callID, _ = m["id"].(string)
+					}
+					if callID == "" {
+						callID = "call_" + name
+					}
+					argsStr, _ := m["arguments"].(string)
+					var inputObj interface{}
+					if argsStr != "" {
+						if err := json.Unmarshal([]byte(argsStr), &inputObj); err != nil {
+							inputObj = map[string]interface{}{"_raw": argsStr}
+						}
+					} else if args, ok := m["arguments"].(map[string]interface{}); ok {
+						inputObj = args
+					}
+					if inputObj == nil {
+						inputObj = map[string]interface{}{}
+					}
+					toolUses = append(toolUses, map[string]interface{}{
+						"type":  "tool_use",
+						"id":    callID,
+						"name":  name,
+						"input": inputObj,
+					})
 				}
 			}
 		}
 	}
-	if strings.TrimSpace(outputText) == "" {
-		// check for incomplete
+	if strings.TrimSpace(outputText) == "" && len(toolUses) == 0 {
 		if status, ok := upstream["status"].(string); ok && status == "incomplete" {
-			// try to still return what we have, but if empty, return placeholder
 			outputText = ""
 		}
-		if outputText == "" {
-			// try fallback: check if upstream has error
+		if outputText == "" && len(toolUses) == 0 {
 			if errInfo, ok := upstream["error"]; ok && errInfo != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(500)
@@ -446,7 +585,10 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			outputText = "(no output)"
 		}
 	}
-	// determine if client expects stream
+	stopReason := "end_turn"
+	if len(toolUses) > 0 {
+		stopReason = "tool_use"
+	}
 	accept := r.Header.Get("Accept")
 	isStream := strings.Contains(accept, "text/event-stream")
 	if v, ok := body["stream"]; ok {
@@ -454,18 +596,15 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			isStream = true
 		}
 	}
-	// Also check if query wants stream? Claude Code uses Accept: application/json normally, but we also had Python check for stream in body
 	if isStream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(200)
-		// SSE events
 		id, _ := upstream["id"].(string)
 		if id == "" {
 			id = "msg_" + model
 		}
-		// message_start
 		start := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -480,30 +619,45 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		writeSSE(w, "message_start", start)
-		writeSSE(w, "content_block_start", map[string]interface{}{"type": "content_block_start", "index": 0, "content_block": map[string]interface{}{"type": "text", "text": ""}})
-		writeSSE(w, "content_block_delta", map[string]interface{}{"type": "content_block_delta", "index": 0, "delta": map[string]interface{}{"type": "text_delta", "text": outputText}})
-		writeSSE(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0})
-		writeSSE(w, "message_delta", map[string]interface{}{"type": "message_delta", "delta": map[string]interface{}{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": map[string]interface{}{"output_tokens": usageOut}})
+		idx := 0
+		if outputText != "" {
+			writeSSE(w, "content_block_start", map[string]interface{}{"type": "content_block_start", "index": idx, "content_block": map[string]interface{}{"type": "text", "text": ""}})
+			writeSSE(w, "content_block_delta", map[string]interface{}{"type": "content_block_delta", "index": idx, "delta": map[string]interface{}{"type": "text_delta", "text": outputText}})
+			writeSSE(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": idx})
+			idx++
+		}
+		for _, tu := range toolUses {
+			writeSSE(w, "content_block_start", map[string]interface{}{"type": "content_block_start", "index": idx, "content_block": map[string]interface{}{"type": "tool_use", "id": tu["id"], "name": tu["name"], "input": map[string]interface{}{}}})
+			inputBytes, _ := json.Marshal(tu["input"])
+			writeSSE(w, "content_block_delta", map[string]interface{}{"type": "content_block_delta", "index": idx, "delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(inputBytes)}})
+			writeSSE(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": idx})
+			idx++
+		}
+		writeSSE(w, "message_delta", map[string]interface{}{"type": "message_delta", "delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil}, "usage": map[string]interface{}{"output_tokens": usageOut}})
 		writeSSE(w, "message_stop", map[string]interface{}{"type": "message_stop"})
 		return
 	}
-	// non-stream
+	var content []map[string]interface{}
+	if outputText != "" {
+		content = append(content, map[string]interface{}{"type": "text", "text": outputText})
+	}
+	content = append(content, toolUses...)
+	if len(content) == 0 {
+		content = append(content, map[string]interface{}{"type": "text", "text": "(no output)"})
+	}
 	respObj := map[string]interface{}{
-		"id":    upstream["id"],
-		"type":  "message",
-		"role":  "assistant",
-		"model": model,
-		"content": []interface{}{
-			map[string]interface{}{"type": "text", "text": outputText},
-		},
-		"stop_reason":   "end_turn",
+		"id":            upstream["id"],
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       content,
+		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]interface{}{
 			"input_tokens":  usageIn,
 			"output_tokens": usageOut,
 		},
 	}
-	// ensure id
 	if respObj["id"] == nil || respObj["id"] == "" {
 		respObj["id"] = "msg_" + model
 	}
