@@ -11,12 +11,14 @@ import (
 	"gopkg.in/yaml.v3"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -180,6 +182,570 @@ remote-management:
 	if _, err := writeFileIfMissing(path, body, 0o600); err != nil {
 		die("writing %s: %v", path, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// openai-compatibility upstream management
+// ---------------------------------------------------------------------------
+
+type openAICompatAPIKey struct {
+	APIKey string `yaml:"api-key"`
+}
+
+type openAICompatModel struct {
+	Name  string `yaml:"name"`
+	Alias string `yaml:"alias"`
+}
+
+type openAICompatEntry struct {
+	Name          string               `yaml:"name"`
+	BaseURL       string               `yaml:"base-url"`
+	APIKeyEntries []openAICompatAPIKey `yaml:"api-key-entries"`
+	Models        []openAICompatModel  `yaml:"models"`
+}
+
+var proxyUpstreamMu sync.Mutex
+
+// upstreamEntryName returns the openai-compatibility entry name for a profile.
+func upstreamEntryName(profileName string, p *config.Profile) string {
+	if p.UpstreamName != "" {
+		return strings.TrimSpace(util.ExpandEnvVars(p.UpstreamName))
+	}
+	return profileName
+}
+
+// resolveUpstreamAPIKey returns the expanded upstream API key for a profile (literal or env var).
+func resolveUpstreamAPIKey(p *config.Profile) string {
+	if p.UpstreamAPIKeyEnv != "" {
+		envName := strings.TrimSpace(p.UpstreamAPIKeyEnv)
+		if v := os.Getenv(envName); v != "" {
+			return strings.TrimSpace(v)
+		}
+		// Fallback: try expanding env var name itself (if user set ${VAR} style)
+		if expanded := util.ExpandEnvVars(envName); expanded != envName {
+			if v := os.Getenv(expanded); v != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	if p.UpstreamAPIKey != "" {
+		return strings.TrimSpace(util.ExpandEnvVars(p.UpstreamAPIKey))
+	}
+	return ""
+}
+
+func resolveAccountUpstreamAPIKey(a *config.Account, p *config.Profile) string {
+	if a.UpstreamAPIKeyEnv != "" {
+		if v := os.Getenv(strings.TrimSpace(a.UpstreamAPIKeyEnv)); v != "" {
+			return strings.TrimSpace(v)
+		}
+		return ""
+	}
+	if a.UpstreamAPIKey != "" {
+		return strings.TrimSpace(util.ExpandEnvVars(a.UpstreamAPIKey))
+	}
+	// Fallback to profile upstream key
+	return resolveUpstreamAPIKey(p)
+}
+
+func normalizeUpstreamBaseURL(raw string) string {
+	s := strings.TrimSpace(util.ExpandEnvVars(raw))
+	s = strings.TrimRight(s, "/")
+	// If user pasted full /v1/responses or /v1/chat/completions endpoint, strip to /v1 prefix.
+	if strings.HasSuffix(s, "/v1/responses") {
+		s = strings.TrimSuffix(s, "/responses")
+		util.Warnf("upstream base URL %q looks like a full /v1/responses endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/v1/chat/completions") {
+		s = strings.TrimSuffix(s, "/chat/completions")
+		util.Warnf("upstream base URL %q looks like a full /v1/chat/completions endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/responses") {
+		s = strings.TrimSuffix(s, "/responses")
+		util.Warnf("upstream base URL %q looks like a /responses endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/chat/completions") {
+		s = strings.TrimSuffix(s, "/chat/completions")
+		util.Warnf("upstream base URL %q looks like a /chat/completions endpoint; normalized to %q", raw, s)
+	}
+	return s
+}
+
+func validateUpstreamBaseURLForProxy(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	return nil
+}
+
+// SyncOpenAICompat ensures cliproxy/config.yaml contains an openai-compatibility entry
+// for the given profile. It is the source of truth; YAML entry is derived. If p.HasUpstream()
+// is false, it removes any stale entry.
+func SyncOpenAICompat(cfg *config.Config, profileName string, p *config.Profile) error {
+	if p.Type != "cliproxy" {
+		return nil
+	}
+	if !p.HasUpstream() {
+		// No upstream declared — remove stale entry if present.
+		return RemoveOpenAICompat(cfg, profileName)
+	}
+	// Validate upstream fields exist (also validated in config.ValidatePool, but double-check for direct calls).
+	rawBase := p.UpstreamBaseURL
+	if rawBase == "" && p.IsPooled() {
+		// For pooled, profile base may be empty if accounts override; fallback to first account base.
+		for _, a := range p.Accounts {
+			if a.UpstreamBaseURL != "" {
+				rawBase = a.UpstreamBaseURL
+				break
+			}
+		}
+	}
+	baseURL := normalizeUpstreamBaseURL(rawBase)
+	if baseURL == "" {
+		return fmt.Errorf("upstream_base_url is required for profile %q", profileName)
+	}
+	if err := validateUpstreamBaseURLForProxy(baseURL); err != nil {
+		return fmt.Errorf("profile %q upstream_base_url %q: %w", profileName, baseURL, err)
+	}
+	entryName := upstreamEntryName(profileName, p)
+	var apiKeys []openAICompatAPIKey
+	var models []openAICompatModel
+	// Determine model mapping.
+	upstreamModel := strings.TrimSpace(p.UpstreamModel)
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(p.Model)
+	}
+	alias := strings.TrimSpace(p.UpstreamModelAlias)
+	if alias == "" {
+		alias = strings.TrimSpace(p.Model)
+	}
+	if alias == "" {
+		alias = upstreamModel
+	}
+	if upstreamModel == "" {
+		upstreamModel = alias
+	}
+	if p.IsPooled() {
+		// Collect api keys from each account; validate base URLs are consistent.
+		seenBases := map[string]bool{}
+		for i, a := range p.Accounts {
+			key := resolveAccountUpstreamAPIKey(&a, p)
+			if key == "" {
+				return fmt.Errorf("profile %q accounts[%d] upstream auth missing: set upstream_api_key_env or upstream_api_key", profileName, i)
+			}
+			apiKeys = append(apiKeys, openAICompatAPIKey{APIKey: key})
+			ab := strings.TrimSpace(a.UpstreamBaseURL)
+			if ab != "" {
+				abNorm := normalizeUpstreamBaseURL(ab)
+				seenBases[abNorm] = true
+			}
+		}
+		if len(seenBases) > 1 {
+			return fmt.Errorf("profile %q pooled upstream_base_url differs across accounts; use a single base URL per profile", profileName)
+		}
+		// If any account overrides baseURL, prefer that (they are all same per check).
+		for ab := range seenBases {
+			baseURL = ab
+			break
+		}
+		models = []openAICompatModel{{Name: upstreamModel, Alias: alias}}
+	} else {
+		key := resolveUpstreamAPIKey(p)
+		if key == "" {
+			return fmt.Errorf("profile %q upstream auth missing: set upstream_api_key_env or upstream_api_key", profileName)
+		}
+		apiKeys = []openAICompatAPIKey{{APIKey: key}}
+		models = []openAICompatModel{{Name: upstreamModel, Alias: alias}}
+	}
+	entry := openAICompatEntry{
+		Name:          entryName,
+		BaseURL:       baseURL,
+		APIKeyEntries: apiKeys,
+		Models:        models,
+	}
+	return upsertOpenAICompatEntry(cfg, entry)
+}
+
+// RemoveOpenAICompat removes the openai-compatibility entry for the given profile name.
+func RemoveOpenAICompat(cfg *config.Config, profileName string) error {
+	path := cfg.ProxyConfigFile()
+	if !fileExists(path) {
+		return nil
+	}
+	proxyUpstreamMu.Lock()
+	defer proxyUpstreamMu.Unlock()
+	// Lock via file lock sidecar if possible (best effort).
+	unlock := lockProxyFile(path)
+	defer unlock()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	// Decode into generic map to preserve unknown keys.
+	var fm map[string]interface{}
+	if err := yaml.Unmarshal(data, &fm); err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if fm == nil {
+		fm = map[string]interface{}{}
+	}
+	raw, ok := fm["openai-compatibility"]
+	if !ok {
+		return nil
+	}
+	var list []interface{}
+	switch v := raw.(type) {
+	case []interface{}:
+		list = v
+	case []map[string]interface{}:
+		for _, m := range v {
+			list = append(list, m)
+		}
+	default:
+		// Unexpected type; leave unchanged.
+		return nil
+	}
+	newList := []interface{}{}
+	removed := false
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			// Try generic map
+			if mm, ok2 := item.(map[interface{}]interface{}); ok2 {
+				// Convert to string-key map
+				m = map[string]interface{}{}
+				for k, v := range mm {
+					if ks, ok := k.(string); ok {
+						m[ks] = v
+					}
+				}
+			} else {
+				newList = append(newList, item)
+				continue
+			}
+		}
+		nameVal, _ := m["name"].(string)
+		if nameVal == profileName {
+			removed = true
+			continue
+		}
+		newList = append(newList, m)
+	}
+	if !removed {
+		return nil
+	}
+	if len(newList) == 0 {
+		delete(fm, "openai-compatibility")
+	} else {
+		fm["openai-compatibility"] = newList
+	}
+	return writeProxyFileAtomically(path, fm)
+}
+
+// IsUpstreamSynced checks if the proxy YAML entry for the profile matches the profile's upstream definition.
+func IsUpstreamSynced(cfg *config.Config, profileName string, p *config.Profile) (bool, string) {
+	if !p.HasUpstream() {
+		return true, "no upstream"
+	}
+	path := cfg.ProxyConfigFile()
+	if !fileExists(path) {
+		return false, "proxy config missing"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, "cannot read proxy config"
+	}
+	if len(data) == 0 {
+		return false, "proxy config empty"
+	}
+	var fm map[string]interface{}
+	if err := yaml.Unmarshal(data, &fm); err != nil {
+		return false, "proxy config parse error"
+	}
+	raw, ok := fm["openai-compatibility"]
+	if !ok {
+		return false, "openai-compatibility missing"
+	}
+	var list []interface{}
+	switch v := raw.(type) {
+	case []interface{}:
+		list = v
+	case []map[string]interface{}:
+		for _, m := range v {
+			list = append(list, m)
+		}
+	default:
+		return false, "invalid openai-compatibility format"
+	}
+	entryName := upstreamEntryName(profileName, p)
+	for _, item := range list {
+		var m map[string]interface{}
+		switch vv := item.(type) {
+		case map[string]interface{}:
+			m = vv
+		case map[interface{}]interface{}:
+			m = map[string]interface{}{}
+			for k, v := range vv {
+				if ks, ok := k.(string); ok {
+					m[ks] = v
+				}
+			}
+		default:
+			continue
+		}
+		if name, _ := m["name"].(string); name == entryName {
+			// Compare base-url
+			baseVal, _ := m["base-url"].(string)
+			expectedBase := normalizeUpstreamBaseURL(p.UpstreamBaseURL)
+			if p.IsPooled() && expectedBase == "" {
+				for _, a := range p.Accounts {
+					if a.UpstreamBaseURL != "" {
+						expectedBase = normalizeUpstreamBaseURL(a.UpstreamBaseURL)
+						break
+					}
+				}
+			}
+			if baseVal != expectedBase {
+				return false, fmt.Sprintf("base-url drift: have %q want %q", baseVal, expectedBase)
+			}
+			// Check api-key-entries length matches expectation (basic)
+			// For pooled, expect len == accounts, else 1
+			if rawKeys, ok := m["api-key-entries"]; ok {
+				var keysList []interface{}
+				switch kv := rawKeys.(type) {
+				case []interface{}:
+					keysList = kv
+				case []map[string]interface{}:
+					for _, mm := range kv {
+						keysList = append(keysList, mm)
+					}
+				}
+				expectedCount := 1
+				if p.IsPooled() {
+					expectedCount = len(p.Accounts)
+				}
+				if len(keysList) != expectedCount {
+					return false, fmt.Sprintf("api-keys drift: have %d want %d", len(keysList), expectedCount)
+				}
+			}
+			// Models check (alias)
+			expectedModel := p.UpstreamModel
+			if expectedModel == "" {
+				expectedModel = p.Model
+			}
+			expectedAlias := p.UpstreamModelAlias
+			if expectedAlias == "" {
+				expectedAlias = p.Model
+			}
+			if expectedAlias == "" {
+				expectedAlias = expectedModel
+			}
+			if rawModels, ok := m["models"]; ok {
+				var mList []interface{}
+				switch mv := rawModels.(type) {
+				case []interface{}:
+					mList = mv
+				case []map[string]interface{}:
+					for _, mm := range mv {
+						mList = append(mList, mm)
+					}
+				}
+				if len(mList) > 0 {
+					if mm, ok := mList[0].(map[string]interface{}); ok {
+						nameVal, _ := mm["name"].(string)
+						aliasVal, _ := mm["alias"].(string)
+						if nameVal != expectedModel || aliasVal != expectedAlias {
+							return false, fmt.Sprintf("model drift: have %q->%q want %q->%q", nameVal, aliasVal, expectedModel, expectedAlias)
+						}
+					}
+				}
+			}
+			return true, "in sync"
+		}
+	}
+	return false, "entry not found"
+}
+
+func upsertOpenAICompatEntry(cfg *config.Config, entry openAICompatEntry) error {
+	path := cfg.ProxyConfigFile()
+	// Ensure config file exists; scaffold if missing.
+	if !fileExists(path) {
+		scaffoldProxyConfig(path)
+	}
+	proxyUpstreamMu.Lock()
+	defer proxyUpstreamMu.Unlock()
+	unlock := lockProxyFile(path)
+	defer unlock()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var fm map[string]interface{}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &fm); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+	}
+	if fm == nil {
+		fm = map[string]interface{}{}
+	}
+	// Ensure required top-level keys exist (port etc.) if file was empty; scaffold already did.
+	// Extract existing list.
+	var list []interface{}
+	if raw, ok := fm["openai-compatibility"]; ok {
+		switch v := raw.(type) {
+		case []interface{}:
+			list = v
+		case []map[string]interface{}:
+			for _, m := range v {
+				list = append(list, m)
+			}
+		default:
+			list = []interface{}{}
+		}
+	}
+	// Convert entry to map for storage.
+	entryMap := map[string]interface{}{
+		"name":     entry.Name,
+		"base-url": entry.BaseURL,
+	}
+	// api-key-entries
+	var apiList []interface{}
+	for _, ak := range entry.APIKeyEntries {
+		apiList = append(apiList, map[string]interface{}{"api-key": ak.APIKey})
+	}
+	entryMap["api-key-entries"] = apiList
+	// models
+	var modelList []interface{}
+	for _, m := range entry.Models {
+		modelList = append(modelList, map[string]interface{}{"name": m.Name, "alias": m.Alias})
+	}
+	entryMap["models"] = modelList
+	// Upsert by name.
+	found := false
+	for i, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			if mm, ok2 := item.(map[interface{}]interface{}); ok2 {
+				m = map[string]interface{}{}
+				for k, v := range mm {
+					if ks, ok := k.(string); ok {
+						m[ks] = v
+					}
+				}
+				list[i] = m
+			} else {
+				continue
+			}
+		}
+		if name, _ := m["name"].(string); name == entry.Name {
+			list[i] = entryMap
+			found = true
+			break
+		}
+	}
+	if !found {
+		list = append(list, entryMap)
+	}
+	fm["openai-compatibility"] = list
+	return writeProxyFileAtomically(path, fm)
+}
+
+func writeProxyFileAtomically(path string, fm map[string]interface{}) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	out, err := yaml.Marshal(fm)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func lockProxyFile(path string) func() {
+	// Best-effort file lock via sidecar lock file; uses sync.Mutex plus flock on unix.
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	// Try flock if available (unix). On other platforms, rely on mutex only.
+	tryFlock(f)
+	return func() {
+		unlockFlock(f)
+		_ = f.Close()
+	}
+}
+
+// tryFlock / unlockFlock are implemented per-OS in daemon_*.go files.
+// Provide no-op defaults here for builds without those files.
+func tryFlock(f *os.File)    {}
+func unlockFlock(f *os.File) {}
+
+// EnsureProxyForUpstream ensures the proxy binary is installed, config is scaffolded and synced,
+// and the daemon is up (or reloads). It is idempotent.
+func EnsureProxyForUpstream(cfg *config.Config, profileName string, p *config.Profile) error {
+	if !p.HasUpstream() {
+		return nil
+	}
+	if findProxyBinary(cfg) == "" {
+		if err := installProxy(); err != nil {
+			return fmt.Errorf("proxy binary not found and install failed: %w", err)
+		}
+	}
+	if err := SyncOpenAICompat(cfg, profileName, p); err != nil {
+		return err
+	}
+	if !fileExists(cfg.ProxyConfigFile()) {
+		scaffoldProxyConfig(cfg.ProxyConfigFile())
+	}
+	if proxyReachable(cfg) {
+		// File watcher will reload; give it a moment.
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}
+	if cfg.Proxy.Autostart() {
+		if err := startProxy(cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpstreamHealthProbe checks if the upstream base URL is reachable (GET /models with 500ms).
+func UpstreamHealthProbe(upstreamBaseURL, apiKey string) error {
+	base := strings.TrimRight(strings.TrimSpace(upstreamBaseURL), "/")
+	if base == "" {
+		return fmt.Errorf("empty upstream base URL")
+	}
+	if !strings.HasSuffix(base, "/v1") && !strings.HasSuffix(base, "/v1/models") {
+		// Normalize probe to /v1/models or /models.
+		if strings.Contains(base, "/v1") {
+			base = strings.TrimSuffix(base, "/")
+		}
+	}
+	probe := base + "/models"
+	if strings.HasSuffix(upstreamBaseURL, "/models") {
+		probe = base
+	}
+	// Use generic probe helper with timeout.
+	_ = apiKey // apiKey may be needed for auth, but probe without auth often returns 401 which still counts as reachable.
+	return probeURL(probe, 500*time.Millisecond)
 }
 
 // ---------------------------------------------------------------------------

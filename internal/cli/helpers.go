@@ -69,6 +69,18 @@ func readLastLines(path string, n int) []string             { return proxy.ReadL
 func followLogs(n int)                                      { proxy.FollowLogs(n) }
 func scaffoldProxyConfig(path string)                       { proxy.ScaffoldProxyConfig(path) }
 func readProxyAPIKeys(cfg *config.Config) []string          { return profile.ReadProxyAPIKeys(cfg) }
+func syncOpenAICompat(cfg *config.Config, name string, p *config.Profile) error {
+	return proxy.SyncOpenAICompat(cfg, name, p)
+}
+func removeOpenAICompat(cfg *config.Config, name string) error {
+	return proxy.RemoveOpenAICompat(cfg, name)
+}
+func ensureProxyForUpstream(cfg *config.Config, name string, p *config.Profile) error {
+	return proxy.EnsureProxyForUpstream(cfg, name, p)
+}
+func isUpstreamSynced(cfg *config.Config, name string, p *config.Profile) (bool, string) {
+	return proxy.IsUpstreamSynced(cfg, name, p)
+}
 
 // settings delegates
 func readClaudeSettings(path string) (*settings.ClaudeSettings, error) {

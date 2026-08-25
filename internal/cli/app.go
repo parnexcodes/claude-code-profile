@@ -2,7 +2,9 @@ package cli
 
 import (
 	"ccp/internal/config"
+	"ccp/internal/proxy"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +175,12 @@ type addOpts struct {
 	disableUnknownWindow          bool
 	extra                         []string // KEY=VAL
 	accounts                      []string // repeatable --account key=val[,key=val...]
+	upstreamBaseURL               string
+	upstreamAPIKeyEnv             string
+	upstreamAPIKey                string
+	upstreamName                  string
+	upstreamModel                 string
+	upstreamModelAlias            string
 }
 
 func parseAccountSpec(spec string) config.Account {
@@ -207,8 +215,20 @@ func parseAccountSpec(spec string) config.Account {
 			a.AuthToken = v
 		case "api_key", "api-key":
 			a.APIKey = v
+		case "upstream_base_url", "upstream-base-url":
+			a.UpstreamBaseURL = v
+		case "upstream_api_key_env", "upstream-api-key-env":
+			a.UpstreamAPIKeyEnv = v
+		case "upstream_api_key", "upstream-api-key":
+			a.UpstreamAPIKey = v
+		case "upstream_name", "upstream-name":
+			a.UpstreamName = v
+		case "upstream_model", "upstream-model":
+			a.UpstreamModel = v
+		case "upstream_model_alias", "upstream-model-alias", "upstream_alias", "upstream-alias":
+			a.UpstreamModelAlias = v
 		default:
-			die("unknown account key %q in --account %q (allowed: name, base_url, auth, auth_token_env, api_key_env, auth_token, api_key)", k, spec)
+			die("unknown account key %q in --account %q (allowed: name, base_url, auth, auth_token_env, api_key_env, auth_token, api_key, upstream_base_url, upstream_api_key_env, upstream_api_key, upstream_name, upstream_model, upstream_model_alias)", k, spec)
 		}
 	}
 	return a
@@ -221,7 +241,9 @@ func handleAdd(args []string) {
 			"              [--account KEY=VAL[,KEY=VAL...]] (repeatable, e.g. --account auth_token_env=CODEX_A)\n" +
 			"              [--haiku-model ID] [--sonnet-model ID] [--opus-model ID]\n" +
 			"              [--subagent-model ID] [--timeout-ms N] [--max-context-tokens N|--1m]\n" +
-			"              [--disable-unknown-model-window-enforcement] [--set KEY=VAL]...")
+			"              [--disable-unknown-model-window-enforcement] [--set KEY=VAL]...\n" +
+			"              [--upstream-base-url URL] [--upstream-api-key-env VAR] [--upstream-api-key KEY]\n" +
+			"              [--upstream-name NAME] [--upstream-model MODEL] [--upstream-model-alias ALIAS]")
 	}
 	name := args[0]
 	if !safeName(name) || name == "." || name == ".." {
@@ -275,6 +297,18 @@ func handleAdd(args []string) {
 			o.extra = append(o.extra, take())
 		case "--account":
 			o.accounts = append(o.accounts, take())
+		case "--upstream-base-url":
+			o.upstreamBaseURL = take()
+		case "--upstream-api-key-env":
+			o.upstreamAPIKeyEnv = take()
+		case "--upstream-api-key":
+			o.upstreamAPIKey = take()
+		case "--upstream-name":
+			o.upstreamName = take()
+		case "--upstream-model":
+			o.upstreamModel = take()
+		case "--upstream-model-alias", "--upstream-alias":
+			o.upstreamModelAlias = take()
 		default:
 			die("unknown option %q", args[i])
 		}
@@ -309,6 +343,12 @@ func handleAdd(args []string) {
 		}
 	}
 	put("base_url", o.baseURL)
+	put("upstream_base_url", o.upstreamBaseURL)
+	put("upstream_api_key_env", o.upstreamAPIKeyEnv)
+	put("upstream_api_key", o.upstreamAPIKey)
+	put("upstream_name", o.upstreamName)
+	put("upstream_model", o.upstreamModel)
+	put("upstream_model_alias", o.upstreamModelAlias)
 	put("auth_token_env", o.authTokenEnv)
 	put("api_key_env", o.apiKeyEnv)
 	put("haiku_model", o.haiku)
@@ -336,6 +376,24 @@ func handleAdd(args []string) {
 			}
 			if a.BaseURL != "" {
 				fmt.Fprintf(&b, "base_url = %q\n", a.BaseURL)
+			}
+			if a.UpstreamBaseURL != "" {
+				fmt.Fprintf(&b, "upstream_base_url = %q\n", a.UpstreamBaseURL)
+			}
+			if a.UpstreamAPIKeyEnv != "" {
+				fmt.Fprintf(&b, "upstream_api_key_env = %q\n", a.UpstreamAPIKeyEnv)
+			}
+			if a.UpstreamAPIKey != "" {
+				fmt.Fprintf(&b, "upstream_api_key = %q\n", a.UpstreamAPIKey)
+			}
+			if a.UpstreamName != "" {
+				fmt.Fprintf(&b, "upstream_name = %q\n", a.UpstreamName)
+			}
+			if a.UpstreamModel != "" {
+				fmt.Fprintf(&b, "upstream_model = %q\n", a.UpstreamModel)
+			}
+			if a.UpstreamModelAlias != "" {
+				fmt.Fprintf(&b, "upstream_model_alias = %q\n", a.UpstreamModelAlias)
 			}
 			if a.Auth != "" {
 				fmt.Fprintf(&b, "auth = %q\n", a.Auth)
@@ -365,6 +423,79 @@ func handleAdd(args []string) {
 		}
 	}
 
+	// Validate upstream fields and sync to proxy before writing profile.
+	hasUpstream := o.upstreamBaseURL != "" || o.upstreamAPIKeyEnv != "" || o.upstreamAPIKey != "" || o.upstreamName != "" || o.upstreamModel != "" || o.upstreamModelAlias != ""
+	hasAccountUpstream := false
+	for _, a := range accounts {
+		if a.HasUpstream() {
+			hasAccountUpstream = true
+			break
+		}
+	}
+	if hasUpstream || hasAccountUpstream {
+		// Implicitly require cliproxy when upstream is used.
+		effectiveType := o.typ
+		if effectiveType == "" {
+			effectiveType = "cliproxy"
+		}
+		if effectiveType != "cliproxy" {
+			die("upstream_* fields require --type cliproxy (got %q)", effectiveType)
+		}
+		// Build a temp profile for validation and sync.
+		tmpProfile := &config.Profile{
+			Type:               effectiveType,
+			BaseURL:            o.baseURL,
+			Model:              o.model,
+			UpstreamBaseURL:    o.upstreamBaseURL,
+			UpstreamAPIKeyEnv:  o.upstreamAPIKeyEnv,
+			UpstreamAPIKey:     o.upstreamAPIKey,
+			UpstreamName:       o.upstreamName,
+			UpstreamModel:      o.upstreamModel,
+			UpstreamModelAlias: o.upstreamModelAlias,
+			Accounts:           accounts,
+		}
+		if o.typ == "" {
+			tmpProfile.Type = "cliproxy"
+		} else {
+			tmpProfile.Type = o.typ
+		}
+		tmpProfile.Normalize()
+		if err := tmpProfile.ValidatePool(); err != nil {
+			die("%v", err)
+		}
+		// Normalize upstream base URL (handle full endpoint like /v1/responses).
+		if tmpProfile.UpstreamBaseURL != "" {
+			norm := cliNormalizeUpstreamBaseURL(tmpProfile.UpstreamBaseURL)
+			tmpProfile.UpstreamBaseURL = norm
+			if norm != o.upstreamBaseURL {
+				s := b.String()
+				origLine := fmt.Sprintf("upstream_base_url = %q\n", o.upstreamBaseURL)
+				newLine := fmt.Sprintf("upstream_base_url = %q\n", norm)
+				s = strings.Replace(s, origLine, newLine, 1)
+				b.Reset()
+				b.WriteString(s)
+			}
+		}
+		for i := range tmpProfile.Accounts {
+			if tmpProfile.Accounts[i].UpstreamBaseURL != "" {
+				tmpProfile.Accounts[i].UpstreamBaseURL = cliNormalizeUpstreamBaseURL(tmpProfile.Accounts[i].UpstreamBaseURL)
+			}
+		}
+		cfg := mustLoadConfig()
+		if err := syncOpenAICompat(cfg, name, tmpProfile); err != nil {
+			die("syncing upstream to proxy: %v", err)
+		}
+		// If type was implicit cliproxy, ensure TOML has explicit type line.
+		if o.typ == "" && hasUpstream {
+			s := b.String()
+			if !strings.Contains(s, "type =") {
+				s = strings.Replace(s, "# type = \"cliproxy\"   # or \"anthropic\" for direct endpoints\n", "type = \"cliproxy\"\n", 1)
+				b.Reset()
+				b.WriteString(s)
+			}
+		}
+	}
+
 	path := filepath.Join(ccpConfigDir(), "profiles", name+".toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		die("%v", err)
@@ -379,6 +510,26 @@ func handleAdd(args []string) {
 	infof("open it with %s; then try %s",
 		paint(cBold, fmt.Sprintf("ccp edit %s", name)),
 		paint(cBold, fmt.Sprintf("ccp show %s", name)))
+}
+func cliNormalizeUpstreamBaseURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	// Expand env vars if present (like ${VAR})
+	s = expandEnvVars(s)
+	s = strings.TrimRight(s, "/")
+	if strings.HasSuffix(s, "/v1/responses") {
+		s = strings.TrimSuffix(s, "/responses")
+		warnf("upstream base URL %q looks like a full /v1/responses endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/v1/chat/completions") {
+		s = strings.TrimSuffix(s, "/chat/completions")
+		warnf("upstream base URL %q looks like a full /v1/chat/completions endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/responses") {
+		s = strings.TrimSuffix(s, "/responses")
+		warnf("upstream base URL %q looks like a /responses endpoint; normalized to %q", raw, s)
+	} else if strings.HasSuffix(s, "/chat/completions") {
+		s = strings.TrimSuffix(s, "/chat/completions")
+		warnf("upstream base URL %q looks like a /chat/completions endpoint; normalized to %q", raw, s)
+	}
+	return s
 }
 
 func handleEdit(args []string) {
@@ -436,6 +587,10 @@ func handleRemove(name string) {
 	}
 	// Best-effort clean of routing state.
 	clearRoutingState(name)
+	// Best-effort clean of upstream proxy entry.
+	if err := removeOpenAICompat(cfg, name); err != nil {
+		warnf("could not clean proxy upstream for %q: %v", name, err)
+	}
 	if removed {
 		okf("removed profiles/%s.toml", name)
 		return
@@ -490,108 +645,186 @@ func runAddWizard() {
 		baseURL = promptLine("Base URL (blank for proxy default http://127.0.0.1:8317)", "")
 	}
 
+	var upstreamBaseURL, upstreamAPIKeyEnv, upstreamAPIKey, upstreamName, upstreamModel, upstreamModelAlias string
+	var hasUpstream bool
+	if typ == "cliproxy" {
+		if confirmYN("Translate generic OpenAI upstream (Opencode Go, OpenRouter, etc.)?", false) {
+			hasUpstream = true
+			for {
+				raw := promptLine("Upstream OpenAI base URL (e.g. https://opencode.ai/zen/go/v1)", "")
+				if raw == "" {
+					warnf("upstream base URL cannot be empty")
+					continue
+				}
+				norm := cliNormalizeUpstreamBaseURL(raw)
+				if u, err := url.Parse(norm); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					warnf("invalid upstream base URL %q", norm)
+					continue
+				}
+				upstreamBaseURL = norm
+				break
+			}
+			upAuthOpts := []string{
+				"api key from env var (recommended)",
+				"api key literal (paste key, stored chmod 600)",
+			}
+			upChoice, err := selectOption("Upstream auth:", upAuthOpts, 0)
+			if err != nil {
+				return
+			}
+			switch upChoice {
+			case 0:
+				for {
+					upstreamAPIKeyEnv = promptLine("Env var holding upstream API key", "")
+					if upstreamAPIKeyEnv != "" {
+						break
+					}
+					warnf("env var name cannot be empty")
+				}
+			case 1:
+				for {
+					upstreamAPIKey = promptLine("Paste upstream API key (stored plaintext, chmod 600)", "")
+					if upstreamAPIKey != "" {
+						break
+					}
+					warnf("key cannot be empty")
+				}
+			}
+			upstreamModel = promptLine("Upstream model name (e.g. muse-spark-1.2-contributor)", "")
+			if upstreamModel == "" {
+				warnf("upstream model is empty; will default to local alias")
+			}
+			upstreamModelAlias = promptLine("Local alias (blank = same as upstream model)", "")
+			if upstreamModelAlias == "" {
+				upstreamModelAlias = upstreamModel
+			}
+			upstreamName = promptLine("Upstream provider name (blank = profile name)", "")
+			if upstreamName != "" && !safeName(upstreamName) {
+				warnf("invalid upstream name %q; ignoring", upstreamName)
+				upstreamName = ""
+			}
+		}
+	}
+
 	desc := promptLine("Description", "")
-	model := promptLine("Model (blank to inherit, append [1m] for 1M models)", "")
+	var model string
+	if hasUpstream {
+		model = upstreamModelAlias
+		if model == "" {
+			model = upstreamModel
+		}
+		if model == "" {
+			model = promptLine("Model (blank to inherit, append [1m] for 1M models)", "")
+		} else {
+			fmt.Printf("  model alias: %s\n", paint(cCyan, model))
+		}
+	} else {
+		model = promptLine("Model (blank to inherit, append [1m] for 1M models)", "")
+	}
 
 	// auth
-	var authOpts []string
-	var authDefault int
-	if typ == "cliproxy" {
-		authOpts = []string{
-			"auto - use proxy config api-keys[0] (recommended)",
-			"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
-			"bearer token literal (paste key, stored chmod 600)",
-			"api key from env var (ANTHROPIC_API_KEY)",
-			"api key literal (paste key, stored chmod 600)",
-		}
-		authDefault = 0
-	} else {
-		authOpts = []string{
-			"none - use Claude login (for official)",
-			"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
-			"bearer token literal (paste key, stored chmod 600)",
-			"api key from env var (ANTHROPIC_API_KEY)",
-			"api key literal (paste key, stored chmod 600)",
-		}
-		authDefault = 0
-	}
-	authChoice, err := selectOption("Auth:", authOpts, authDefault)
-	if err != nil {
-		return
-	}
 	var auth, authTokenEnv, apiKeyEnv, authToken, apiKey string
-	if typ == "cliproxy" {
-		switch authChoice {
-		case 0:
-			// auto
-		case 1:
-			for {
-				authTokenEnv = promptLine("Env var holding bearer token", "")
-				if authTokenEnv != "" {
-					break
-				}
-				warnf("env var name cannot be empty")
-			}
-		case 2:
-			for {
-				authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
-				if authToken != "" {
-					break
-				}
-				warnf("token cannot be empty")
-			}
-		case 3:
-			for {
-				apiKeyEnv = promptLine("Env var holding API key", "")
-				if apiKeyEnv != "" {
-					break
-				}
-				warnf("env var name cannot be empty")
-			}
-		case 4:
-			for {
-				apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
-				if apiKey != "" {
-					break
-				}
-				warnf("key cannot be empty")
-			}
-		}
+	if hasUpstream {
+		// proxy auth stays auto; no prompt
 	} else {
-		switch authChoice {
-		case 0:
-			auth = "none"
-		case 1:
-			for {
-				authTokenEnv = promptLine("Env var holding bearer token", "")
-				if authTokenEnv != "" {
-					break
-				}
-				warnf("env var name cannot be empty")
+		var authOpts []string
+		var authDefault int
+		if typ == "cliproxy" {
+			authOpts = []string{
+				"auto - use proxy config api-keys[0] (recommended)",
+				"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+				"bearer token literal (paste key, stored chmod 600)",
+				"api key from env var (ANTHROPIC_API_KEY)",
+				"api key literal (paste key, stored chmod 600)",
 			}
-		case 2:
-			for {
-				authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
-				if authToken != "" {
-					break
-				}
-				warnf("token cannot be empty")
+			authDefault = 0
+		} else {
+			authOpts = []string{
+				"none - use Claude login (for official)",
+				"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+				"bearer token literal (paste key, stored chmod 600)",
+				"api key from env var (ANTHROPIC_API_KEY)",
+				"api key literal (paste key, stored chmod 600)",
 			}
-		case 3:
-			for {
-				apiKeyEnv = promptLine("Env var holding API key", "")
-				if apiKeyEnv != "" {
-					break
+			authDefault = 0
+		}
+		authChoice, err := selectOption("Auth:", authOpts, authDefault)
+		if err != nil {
+			return
+		}
+		if typ == "cliproxy" {
+			switch authChoice {
+			case 0:
+				// auto
+			case 1:
+				for {
+					authTokenEnv = promptLine("Env var holding bearer token", "")
+					if authTokenEnv != "" {
+						break
+					}
+					warnf("env var name cannot be empty")
 				}
-				warnf("env var name cannot be empty")
+			case 2:
+				for {
+					authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
+					if authToken != "" {
+						break
+					}
+					warnf("token cannot be empty")
+				}
+			case 3:
+				for {
+					apiKeyEnv = promptLine("Env var holding API key", "")
+					if apiKeyEnv != "" {
+						break
+					}
+					warnf("env var name cannot be empty")
+				}
+			case 4:
+				for {
+					apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
+					if apiKey != "" {
+						break
+					}
+					warnf("key cannot be empty")
+				}
 			}
-		case 4:
-			for {
-				apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
-				if apiKey != "" {
-					break
+		} else {
+			switch authChoice {
+			case 0:
+				auth = "none"
+			case 1:
+				for {
+					authTokenEnv = promptLine("Env var holding bearer token", "")
+					if authTokenEnv != "" {
+						break
+					}
+					warnf("env var name cannot be empty")
 				}
-				warnf("key cannot be empty")
+			case 2:
+				for {
+					authToken = promptLine("Paste bearer token (stored plaintext, chmod 600)", "")
+					if authToken != "" {
+						break
+					}
+					warnf("token cannot be empty")
+				}
+			case 3:
+				for {
+					apiKeyEnv = promptLine("Env var holding API key", "")
+					if apiKeyEnv != "" {
+						break
+					}
+					warnf("env var name cannot be empty")
+				}
+			case 4:
+				for {
+					apiKey = promptLine("Paste API key (stored plaintext, chmod 600)", "")
+					if apiKey != "" {
+						break
+					}
+					warnf("key cannot be empty")
+				}
 			}
 		}
 	}
@@ -609,108 +842,185 @@ func runAddWizard() {
 		for idx := 0; idx < count; idx++ {
 			fmt.Println()
 			fmt.Printf("%s %d/%d\n", paint(cBold, fmt.Sprintf("Account %d", idx+1)), idx+1, count)
-			// Per-account auth (reuse same menu as top-level but scoped).
 			var aAuth, aAuthTokenEnv, aAPIKeyEnv, aAuthToken, aAPIKey, aBaseURL, aName string
+			var aUpstreamBaseURL, aUpstreamAPIKeyEnv, aUpstreamAPIKey, aUpstreamName, aUpstreamModel, aUpstreamModelAlias string
 			aName = promptLine("  Account name (optional, for display)", "")
 			if aName != "" && !safeName(aName) {
 				warnf("invalid account name %q; ignoring", aName)
 				aName = ""
 			}
-			// Per-account endpoint override (shared base_url is profile-level).
 			aBaseURL = promptLine("  Base URL override (blank = use profile base_url)", "")
-			authChoice2, err := selectOption("  Auth for this account:", authOpts, authDefault)
-			if err != nil {
-				return
-			}
-			if typ == "cliproxy" {
-				switch authChoice2 {
-				case 0:
-					// auto – leave auth empty so it falls back to proxy api-keys[0] at resolve time.
-				case 1:
-					for {
-						aAuthTokenEnv = promptLine("  Env var holding bearer token", "")
-						if aAuthTokenEnv != "" {
-							break
-						}
-						warnf("env var name cannot be empty")
-					}
-				case 2:
-					for {
-						aAuthToken = promptLine("  Paste bearer token (stored plaintext, chmod 600)", "")
-						if aAuthToken != "" {
-							break
-						}
-						warnf("token cannot be empty")
-					}
-				case 3:
-					for {
-						aAPIKeyEnv = promptLine("  Env var holding API key", "")
-						if aAPIKeyEnv != "" {
-							break
-						}
-						warnf("env var name cannot be empty")
-					}
-				case 4:
-					for {
-						aAPIKey = promptLine("  Paste API key (stored plaintext, chmod 600)", "")
-						if aAPIKey != "" {
-							break
-						}
-						warnf("key cannot be empty")
+			if hasUpstream {
+				aUpstreamBaseURL = promptLine("  Upstream base URL override (blank = use profile upstream base_url)", "")
+				if aUpstreamBaseURL != "" {
+					norm := cliNormalizeUpstreamBaseURL(aUpstreamBaseURL)
+					if u, err := url.Parse(norm); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+						warnf("invalid upstream base URL %q; ignoring", aUpstreamBaseURL)
+						aUpstreamBaseURL = ""
+					} else {
+						aUpstreamBaseURL = norm
 					}
 				}
-			} else {
-				switch authChoice2 {
+				upAuthOpts2 := []string{
+					"api key from env var (recommended)",
+					"api key literal (paste key, stored chmod 600)",
+					"inherit from profile upstream",
+				}
+				upChoice2, err := selectOption("  Upstream auth for this account:", upAuthOpts2, 0)
+				if err != nil {
+					return
+				}
+				switch upChoice2 {
 				case 0:
-					aAuth = "none"
+					for {
+						aUpstreamAPIKeyEnv = promptLine("  Env var holding upstream API key", "")
+						if aUpstreamAPIKeyEnv != "" {
+							break
+						}
+						warnf("env var name cannot be empty")
+					}
 				case 1:
 					for {
-						aAuthTokenEnv = promptLine("  Env var holding bearer token", "")
-						if aAuthTokenEnv != "" {
-							break
-						}
-						warnf("env var name cannot be empty")
-					}
-				case 2:
-					for {
-						aAuthToken = promptLine("  Paste bearer token (stored plaintext, chmod 600)", "")
-						if aAuthToken != "" {
-							break
-						}
-						warnf("token cannot be empty")
-					}
-				case 3:
-					for {
-						aAPIKeyEnv = promptLine("  Env var holding API key", "")
-						if aAPIKeyEnv != "" {
-							break
-						}
-						warnf("env var name cannot be empty")
-					}
-				case 4:
-					for {
-						aAPIKey = promptLine("  Paste API key (stored plaintext, chmod 600)", "")
-						if aAPIKey != "" {
+						aUpstreamAPIKey = promptLine("  Paste upstream API key (stored plaintext, chmod 600)", "")
+						if aUpstreamAPIKey != "" {
 							break
 						}
 						warnf("key cannot be empty")
+					}
+				case 2:
+					// inherit
+				}
+				aUpstreamModel = promptLine("  Upstream model override (blank = use profile upstream model)", "")
+				aUpstreamModelAlias = promptLine("  Upstream alias override (blank = same)", "")
+				aUpstreamName = promptLine("  Upstream provider name override (blank = default)", "")
+				if aUpstreamName != "" && !safeName(aUpstreamName) {
+					warnf("invalid upstream name %q; ignoring", aUpstreamName)
+					aUpstreamName = ""
+				}
+				// proxy auth for translated pool stays auto
+			} else {
+				var authOpts2 []string
+				var authDefault2 int
+				if typ == "cliproxy" {
+					authOpts2 = []string{
+						"auto - use proxy config api-keys[0] (recommended)",
+						"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+						"bearer token literal (paste key, stored chmod 600)",
+						"api key from env var (ANTHROPIC_API_KEY)",
+						"api key literal (paste key, stored chmod 600)",
+					}
+					authDefault2 = 0
+				} else {
+					authOpts2 = []string{
+						"none - use Claude login (for official)",
+						"bearer token from env var (ANTHROPIC_AUTH_TOKEN)",
+						"bearer token literal (paste key, stored chmod 600)",
+						"api key from env var (ANTHROPIC_API_KEY)",
+						"api key literal (paste key, stored chmod 600)",
+					}
+					authDefault2 = 0
+				}
+				authChoice2, err := selectOption("  Auth for this account:", authOpts2, authDefault2)
+				if err != nil {
+					return
+				}
+				if typ == "cliproxy" {
+					switch authChoice2 {
+					case 0:
+					case 1:
+						for {
+							aAuthTokenEnv = promptLine("  Env var holding bearer token", "")
+							if aAuthTokenEnv != "" {
+								break
+							}
+							warnf("env var name cannot be empty")
+						}
+					case 2:
+						for {
+							aAuthToken = promptLine("  Paste bearer token (stored plaintext, chmod 600)", "")
+							if aAuthToken != "" {
+								break
+							}
+							warnf("token cannot be empty")
+						}
+					case 3:
+						for {
+							aAPIKeyEnv = promptLine("  Env var holding API key", "")
+							if aAPIKeyEnv != "" {
+								break
+							}
+							warnf("env var name cannot be empty")
+						}
+					case 4:
+						for {
+							aAPIKey = promptLine("  Paste API key (stored plaintext, chmod 600)", "")
+							if aAPIKey != "" {
+								break
+							}
+							warnf("key cannot be empty")
+						}
+					}
+				} else {
+					switch authChoice2 {
+					case 0:
+						aAuth = "none"
+					case 1:
+						for {
+							aAuthTokenEnv = promptLine("  Env var holding bearer token", "")
+							if aAuthTokenEnv != "" {
+								break
+							}
+							warnf("env var name cannot be empty")
+						}
+					case 2:
+						for {
+							aAuthToken = promptLine("  Paste bearer token (stored plaintext, chmod 600)", "")
+							if aAuthToken != "" {
+								break
+							}
+							warnf("token cannot be empty")
+						}
+					case 3:
+						for {
+							aAPIKeyEnv = promptLine("  Env var holding API key", "")
+							if aAPIKeyEnv != "" {
+								break
+							}
+							warnf("env var name cannot be empty")
+						}
+					case 4:
+						for {
+							aAPIKey = promptLine("  Paste API key (stored plaintext, chmod 600)", "")
+							if aAPIKey != "" {
+								break
+							}
+							warnf("key cannot be empty")
+						}
 					}
 				}
 			}
 			accounts = append(accounts, config.Account{
-				Name:         aName,
-				BaseURL:      aBaseURL,
-				Auth:         aAuth,
-				AuthTokenEnv: aAuthTokenEnv,
-				APIKeyEnv:    aAPIKeyEnv,
-				AuthToken:    aAuthToken,
-				APIKey:       aAPIKey,
+				Name:               aName,
+				BaseURL:            aBaseURL,
+				Auth:               aAuth,
+				AuthTokenEnv:       aAuthTokenEnv,
+				APIKeyEnv:          aAPIKeyEnv,
+				AuthToken:          aAuthToken,
+				APIKey:             aAPIKey,
+				UpstreamBaseURL:    aUpstreamBaseURL,
+				UpstreamAPIKeyEnv:  aUpstreamAPIKeyEnv,
+				UpstreamAPIKey:     aUpstreamAPIKey,
+				UpstreamName:       aUpstreamName,
+				UpstreamModel:      aUpstreamModel,
+				UpstreamModelAlias: aUpstreamModelAlias,
 			})
 		}
 		routing = &config.Routing{Strategy: "round-robin"}
-		if len(accounts) > 0 && (auth != "" || authTokenEnv != "" || apiKeyEnv != "" || authToken != "" || apiKey != "") {
-			infof("pool wins: ignoring top-level auth in favor of per-account auth")
-			auth, authTokenEnv, apiKeyEnv, authToken, apiKey = "", "", "", "", ""
+		if len(accounts) > 0 {
+			if !hasUpstream && (auth != "" || authTokenEnv != "" || apiKeyEnv != "" || authToken != "" || apiKey != "") {
+				infof("pool wins: ignoring top-level auth in favor of per-account auth")
+				auth, authTokenEnv, apiKeyEnv, authToken, apiKey = "", "", "", "", ""
+			}
 		}
 	}
 
@@ -743,6 +1053,23 @@ func runAddWizard() {
 	if baseURL != "" {
 		fmt.Printf("  base_url:    %s\n", baseURL)
 	}
+	if hasUpstream {
+		fmt.Printf("  upstream:    %s\n", upstreamBaseURL)
+		if upstreamAPIKeyEnv != "" {
+			fmt.Printf("  up auth:     api key $%s\n", upstreamAPIKeyEnv)
+		} else if upstreamAPIKey != "" {
+			fmt.Printf("  up auth:     api key %s\n", maskSecret(upstreamAPIKey))
+		}
+		if upstreamModel != "" {
+			fmt.Printf("  up model:    %s\n", upstreamModel)
+			if upstreamModelAlias != "" && upstreamModelAlias != upstreamModel {
+				fmt.Printf("  alias:       %s\n", upstreamModelAlias)
+			}
+		}
+		if upstreamName != "" {
+			fmt.Printf("  up name:     %s\n", upstreamName)
+		}
+	}
 	if desc != "" {
 		fmt.Printf("  description: %s\n", desc)
 	}
@@ -755,45 +1082,72 @@ func runAddWizard() {
 		fmt.Printf("  pool:        %d accounts (round-robin)\n", len(accounts))
 		for i, a := range accounts {
 			src := ""
-			switch {
-			case a.Auth == "none":
-				src = "none"
-			case a.AuthTokenEnv != "":
-				src = fmt.Sprintf("bearer $%s", a.AuthTokenEnv)
-			case a.APIKeyEnv != "":
-				src = fmt.Sprintf("api key $%s", a.APIKeyEnv)
-			case a.AuthToken != "":
-				src = fmt.Sprintf("bearer %s", maskSecret(a.AuthToken))
-			case a.APIKey != "":
-				src = fmt.Sprintf("api key %s", maskSecret(a.APIKey))
-			default:
-				if typ == "cliproxy" {
-					src = "auto (proxy api-keys[0])"
+			if hasUpstream {
+				switch {
+				case a.UpstreamAPIKeyEnv != "":
+					src = fmt.Sprintf("upstream api key $%s", a.UpstreamAPIKeyEnv)
+				case a.UpstreamAPIKey != "":
+					src = fmt.Sprintf("upstream api key %s", maskSecret(a.UpstreamAPIKey))
+				default:
+					src = "upstream inherit"
 				}
-			}
-			if a.BaseURL != "" {
-				src += " base_url=" + a.BaseURL
-			}
-			if a.Name != "" {
-				src += " name=" + a.Name
+				if a.UpstreamBaseURL != "" {
+					src += " upstream_base_url=" + a.UpstreamBaseURL
+				}
+				if a.UpstreamModel != "" {
+					src += " upstream_model=" + a.UpstreamModel
+				}
+				if a.UpstreamModelAlias != "" {
+					src += " alias=" + a.UpstreamModelAlias
+				}
+				if a.Name != "" {
+					src += " name=" + a.Name
+				}
+			} else {
+				switch {
+				case a.Auth == "none":
+					src = "none"
+				case a.AuthTokenEnv != "":
+					src = fmt.Sprintf("bearer $%s", a.AuthTokenEnv)
+				case a.APIKeyEnv != "":
+					src = fmt.Sprintf("api key $%s", a.APIKeyEnv)
+				case a.AuthToken != "":
+					src = fmt.Sprintf("bearer %s", maskSecret(a.AuthToken))
+				case a.APIKey != "":
+					src = fmt.Sprintf("api key %s", maskSecret(a.APIKey))
+				default:
+					if typ == "cliproxy" {
+						src = "auto (proxy api-keys[0])"
+					}
+				}
+				if a.BaseURL != "" {
+					src += " base_url=" + a.BaseURL
+				}
+				if a.Name != "" {
+					src += " name=" + a.Name
+				}
 			}
 			fmt.Printf("    [%d] %s\n", i, src)
 		}
 	} else {
-		switch {
-		case auth == "none":
-			fmt.Printf("  auth:        none\n")
-		case authTokenEnv != "":
-			fmt.Printf("  auth:        bearer from $%s\n", authTokenEnv)
-		case authToken != "":
-			fmt.Printf("  auth:        bearer literal %s\n", maskSecret(authToken))
-		case apiKeyEnv != "":
-			fmt.Printf("  auth:        api key from $%s\n", apiKeyEnv)
-		case apiKey != "":
-			fmt.Printf("  auth:        api key literal %s\n", maskSecret(apiKey))
-		default:
-			if typ == "cliproxy" {
-				fmt.Printf("  auth:        auto (proxy api-keys[0])\n")
+		if hasUpstream {
+			// already shown upstream above
+		} else {
+			switch {
+			case auth == "none":
+				fmt.Printf("  auth:        none\n")
+			case authTokenEnv != "":
+				fmt.Printf("  auth:        bearer from $%s\n", authTokenEnv)
+			case authToken != "":
+				fmt.Printf("  auth:        bearer literal %s\n", maskSecret(authToken))
+			case apiKeyEnv != "":
+				fmt.Printf("  auth:        api key from $%s\n", apiKeyEnv)
+			case apiKey != "":
+				fmt.Printf("  auth:        api key literal %s\n", maskSecret(apiKey))
+			default:
+				if typ == "cliproxy" {
+					fmt.Printf("  auth:        auto (proxy api-keys[0])\n")
+				}
 			}
 		}
 	}
@@ -826,12 +1180,28 @@ func runAddWizard() {
 		APIKeyEnv:                            apiKeyEnv,
 		AuthToken:                            authToken,
 		APIKey:                               apiKey,
+		UpstreamBaseURL:                      upstreamBaseURL,
+		UpstreamAPIKeyEnv:                    upstreamAPIKeyEnv,
+		UpstreamAPIKey:                       upstreamAPIKey,
+		UpstreamName:                         upstreamName,
+		UpstreamModel:                        upstreamModel,
+		UpstreamModelAlias:                   upstreamModelAlias,
 		HaikuModel:                           haiku,
 		APITimeoutMS:                         timeoutMS,
 		MaxContextTokens:                     ctxTokens,
 		DisableUnknownModelWindowEnforcement: disableUnknown,
 		Accounts:                             accounts,
 		Routing:                              routing,
+	}
+	// Validate including upstream.
+	p.Normalize()
+	if err := p.ValidatePool(); err != nil {
+		die("%v", err)
+	}
+	if hasUpstream {
+		if err := proxy.SyncOpenAICompat(cfg, name, p); err != nil {
+			die("syncing upstream to proxy: %v", err)
+		}
 	}
 	if err := saveProfile(name, p); err != nil {
 		die("%v", err)
@@ -869,6 +1239,24 @@ func renderProfileToml(p *config.Profile) string {
 	}
 	if p.BaseURL != "" {
 		fmt.Fprintf(&b, "base_url = %q\n", p.BaseURL)
+	}
+	if p.UpstreamBaseURL != "" {
+		fmt.Fprintf(&b, "upstream_base_url = %q\n", p.UpstreamBaseURL)
+	}
+	if p.UpstreamAPIKeyEnv != "" {
+		fmt.Fprintf(&b, "upstream_api_key_env = %q\n", p.UpstreamAPIKeyEnv)
+	}
+	if p.UpstreamAPIKey != "" {
+		fmt.Fprintf(&b, "upstream_api_key = %q\n", p.UpstreamAPIKey)
+	}
+	if p.UpstreamName != "" {
+		fmt.Fprintf(&b, "upstream_name = %q\n", p.UpstreamName)
+	}
+	if p.UpstreamModel != "" {
+		fmt.Fprintf(&b, "upstream_model = %q\n", p.UpstreamModel)
+	}
+	if p.UpstreamModelAlias != "" {
+		fmt.Fprintf(&b, "upstream_model_alias = %q\n", p.UpstreamModelAlias)
 	}
 	if p.Model != "" {
 		fmt.Fprintf(&b, "model = %q\n", p.Model)
@@ -942,6 +1330,24 @@ func renderProfileToml(p *config.Profile) string {
 			}
 			if a.BaseURL != "" {
 				fmt.Fprintf(&b, "base_url = %q\n", a.BaseURL)
+			}
+			if a.UpstreamBaseURL != "" {
+				fmt.Fprintf(&b, "upstream_base_url = %q\n", a.UpstreamBaseURL)
+			}
+			if a.UpstreamAPIKeyEnv != "" {
+				fmt.Fprintf(&b, "upstream_api_key_env = %q\n", a.UpstreamAPIKeyEnv)
+			}
+			if a.UpstreamAPIKey != "" {
+				fmt.Fprintf(&b, "upstream_api_key = %q\n", a.UpstreamAPIKey)
+			}
+			if a.UpstreamName != "" {
+				fmt.Fprintf(&b, "upstream_name = %q\n", a.UpstreamName)
+			}
+			if a.UpstreamModel != "" {
+				fmt.Fprintf(&b, "upstream_model = %q\n", a.UpstreamModel)
+			}
+			if a.UpstreamModelAlias != "" {
+				fmt.Fprintf(&b, "upstream_model_alias = %q\n", a.UpstreamModelAlias)
 			}
 			if a.Auth != "" {
 				fmt.Fprintf(&b, "auth = %q\n", a.Auth)

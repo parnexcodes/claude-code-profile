@@ -1,0 +1,26 @@
+## 1. Config — declarative upstream fields
+
+- [x] 1.1 Extend `internal/config/config.go:Profile` with `UpstreamBaseURL`, `UpstreamAPIKeyEnv`, `UpstreamAPIKey`, `UpstreamName`, `UpstreamModel`, `UpstreamAlias` (TOML tags `upstream_base_url` etc.) and matching fields on `Account`; add `hasUpstream()`, `normalize()` trimming + `hasTopLevelAuth`-style guard, `${VAR}` handling note.
+- [x] 1.2 Extend `Profile.validatePool()` / `safeName` checks for upstream: valid URL when `hasUpstream()`, require at least one upstream auth source, reject mixed `hasUpstream` / no-upstream accounts in same pool with clear error; update `renderProfileToml()` (`internal/cli/app.go:862`) to emit upstream fields.
+- [x] 1.3 Add unit tests `internal/config/config_test.go`: load/round-trip upstream fields via `profiles/*.toml` and inline `[profiles.*]`, `safeName` edge cases, validation errors for missing auth / bad URL; golden files for `renderProfileToml` with upstream.
+
+## 2. Proxy — openai-compatibility YAML merge + lifecycle
+
+- [x] 2.1 Define `OpenAICompatEntry` / `ModelEntry` types in `internal/proxy/proxy.go` (fields `name`, `base-url`, `api-key-entries[]`, `models[]`, `disabled/headers` pass-through); parse existing `cliproxy/config.yaml` preserving non-managed keys via `yaml.Node` or `map[string]any`.
+- [x] 2.2 Implement `SyncOpenAICompat(cfg, profileName, profile)` — upsert/delete entry where `name == upstream_name || profileName`, atomic `tmp+rename 0600`, `flock` lock (`routing/daemon_unix.go` pattern), preserve other `openai-compatibility` entries and top-level keys (`port/api-keys/auth-dir`); implement `RemoveOpenAICompat(cfg, profileName)`.
+- [x] 2.3 Implement `EnsureProxyForUpstream(cfg)` — `findProxyBinary` → `installProxy` if missing, `scaffoldProxyConfig` if need, `SyncOpenAICompat`, then `proxyReachable` → reload (poll `/v1/models` for alias) else `startProxy` with `start_timeout_secs`; expose `UpstreamHealthProbe(upstreamBaseURL, apiKey)` helper (500 ms `ProbeURL` to `<base-url>/models`).
+- [x] 2.4 Add hermetic tests `internal/proxy/proxy_test.go`: merge adds/updates/removes single entry while preserving `port`/`api-keys` and unrelated `openai-compatibility` entries; `0600` perm assertion; concurrent `SyncOpenAICompat` via `flock` does not corrupt YAML; golden YAML diffs for Opencode Go example (`muse-spark-1.2-contributor`).
+
+## 3. CLI — wizard, flags, launch/show/doctor/remove
+
+- [x] 3.1 Update `internal/cli/app.go:handleAdd` flag parsing: add `--upstream-base-url`, `--upstream-api-key-env`, `--upstream-api-key`, `--upstream-name`, `--upstream-model`/`--upstream-alias`; extend `parseAccountSpec` to accept `upstream_*` keys; validate URL (`net/url.Parse`) and require auth; call `proxy.SyncOpenAICompat` + handle error before `saveProfile`.
+- [x] 3.2 Update `runAddWizard()`: after `Type` selection, if `cliproxy` prompt "Translate generic OpenAI upstream? (y/N)" — on yes, prompt upstream base URL (normalize, warn if pasted `/v1/responses` full endpoint), upstream auth (reuse 5-option menu for upstream), model name vs alias (alias defaults to `model`); loop for pool (`Pool multiple upstreams under this profile?`) reusing per-account upstream prompts; then `EnsureProxyForUpstream` / `SyncOpenAICompat` and summary includes upstream masked key.
+- [x] 3.3 Update `internal/cli/launch.go:launch` — before `buildEnv`, if `p.hasUpstream()` then `EnsureProxyForUpstream` / `SyncOpenAICompat` (idempotent drift repair) before `proxyReachable`/`startProxy` check; ensure `BuiltEnv` still sets `ANTHROPIC_BASE_URL=proxyBaseURL` + `ANTHROPIC_AUTH_TOKEN=api-keys[0]` for translated profiles.
+- [x] 3.4 Update `showProfile`/`listProfiles`/`doctor` — `show` prints `translated` banner, upstream base-url, masked upstream auth source, drift status; `list` adds `cliproxy:openai` indicator; `doctor` probes upstream credential/env existence and YAML sync drift (`fail` with remediation); wire `findEnvConflicts` for upstream env vars.
+- [x] 3.5 Update `handleRemove` — after deleting `profiles/<name>.toml`, call `proxy.RemoveOpenAICompat` and reload daemon; clear `routing/<name>.json` if pooled.
+- [x] 3.6 Add CLI tests `internal/cli/cli_test.go` + `doctor_test.go`: flag parsing golden for `ccp add muse --type cliproxy --model ... --upstream-*`, wizard input-sequence test via `t.TempDir`+`CCP_HOME`, `ccp show` masking, `ccp doctor` missing `OPENCODE_GO_API_KEY` fail, `ccp remove` YAML cleanup; update existing `show-*.golden`/`list-*.golden`.
+
+## 4. Docs, man, and verification
+
+- [x] 4.1 Update `README.md` (Using CLIProxyAPI section), `AGENTS.md`, and `openspec/specs/openai-translation/spec.md` cross-refs: document `ccp add` transparent flow with Opencode Go `muse-spark-1.2-contributor` example, `https://opencode.ai/zen/go/v1` base URL note, and `base_url` vs `upstream_base_url` distinction.
+- [x] 4.2 Run verification: `go test ./... -count=1 -race`, `go vet ./...`, `golangci-lint run ./...`, `gofmt -w cmd internal .`, manual hermetic smoke `CCP_HOME=$(mktemp -d) ccp add muse --type cliproxy --model muse-spark-1.2-contributor --upstream-base-url https://opencode.ai/zen/go/v1 --upstream-api-key-env OPENCODE_GO_API_KEY && ccp show muse && ccp doctor` (no real daemon needed via temp dir).

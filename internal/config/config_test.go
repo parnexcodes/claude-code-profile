@@ -196,3 +196,161 @@ description = "file desc"
 		t.Fatalf("file should win, got %+v", cfg.Profiles["bar"])
 	}
 }
+
+func TestUpstreamFields_LoadAndRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	state := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", state)
+	os.MkdirAll(dir, 0o700)
+	os.MkdirAll(filepath.Join(dir, "profiles"), 0o700)
+	tomlContent := `
+type = "cliproxy"
+model = "muse-spark-1.2-contributor"
+upstream_base_url = "https://opencode.ai/zen/go/v1"
+upstream_api_key_env = "OPENCODE_GO_API_KEY"
+upstream_model = "muse-spark-1.2-contributor"
+upstream_model_alias = "muse"
+upstream_name = "opencode-go"
+`
+	if err := os.WriteFile(filepath.Join(dir, "profiles", "muse.toml"), []byte(tomlContent), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	p := cfg.Profiles["muse"]
+	if !p.HasUpstream() {
+		t.Fatalf("expected HasUpstream true")
+	}
+	if p.UpstreamBaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("base %q", p.UpstreamBaseURL)
+	}
+	if p.UpstreamAPIKeyEnv != "OPENCODE_GO_API_KEY" {
+		t.Fatalf("key env %q", p.UpstreamAPIKeyEnv)
+	}
+	if p.UpstreamModel != "muse-spark-1.2-contributor" {
+		t.Fatalf("model %q", p.UpstreamModel)
+	}
+	if p.UpstreamName != "opencode-go" {
+		t.Fatalf("name %q", p.UpstreamName)
+	}
+	// Validation should pass
+	if err := p.ValidatePool(); err != nil {
+		t.Fatalf("ValidatePool should pass: %v", err)
+	}
+	// Test inline vs file precedence already covered, but add inline upstream
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte(`
+[profiles.inlineUp]
+type = "cliproxy"
+model = "test"
+upstream_base_url = "https://example.com/v1"
+upstream_api_key = "sk-test"
+`), 0o600)
+	cfg2, _ := LoadConfig()
+	if cfg2.Profiles["inlineUp"].UpstreamBaseURL != "https://example.com/v1" {
+		t.Fatalf("inline upstream not loaded")
+	}
+}
+
+func TestUpstreamValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile Profile
+		wantErr bool
+	}{
+		{
+			name: "missing auth",
+			profile: Profile{
+				Type:            "cliproxy",
+				Model:           "m",
+				UpstreamBaseURL: "https://example.com/v1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bad url",
+			profile: Profile{
+				Type:            "cliproxy",
+				Model:           "m",
+				UpstreamBaseURL: "not-a-url",
+				UpstreamAPIKey:  "sk-123",
+			},
+			wantErr: true,
+		},
+		{
+			name: "wrong type",
+			profile: Profile{
+				Type:            "anthropic",
+				Model:           "m",
+				UpstreamBaseURL: "https://example.com/v1",
+				UpstreamAPIKey:  "sk-123",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid",
+			profile: Profile{
+				Type:            "cliproxy",
+				Model:           "m",
+				UpstreamBaseURL: "https://example.com/v1",
+				UpstreamAPIKey:  "sk-123",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid env var",
+			profile: Profile{
+				Type:              "cliproxy",
+				Model:             "m",
+				UpstreamBaseURL:   "https://example.com/v1",
+				UpstreamAPIKeyEnv: "MY_KEY",
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.profile.Normalize()
+			err := tc.profile.ValidatePool()
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestUpstreamMixedPoolRejected(t *testing.T) {
+	p := Profile{
+		Type:            "cliproxy",
+		Model:           "m",
+		UpstreamBaseURL: "https://example.com/v1",
+		UpstreamAPIKey:  "sk-123",
+		Accounts: []Account{
+			{Name: "a1", UpstreamBaseURL: "https://example.com/v1", UpstreamAPIKey: "sk-a1"},
+			{Name: "a2"}, // no upstream -> mixed
+		},
+	}
+	p.Normalize()
+	if err := p.ValidatePool(); err == nil {
+		t.Fatalf("expected mixed pool error")
+	}
+	p2 := Profile{
+		Type:            "cliproxy",
+		Model:           "m",
+		UpstreamBaseURL: "https://example.com/v1",
+		UpstreamAPIKey:  "sk-123",
+		Accounts: []Account{
+			{Name: "a1", UpstreamBaseURL: "https://example.com/v1", UpstreamAPIKey: "sk-a1"},
+			{Name: "a2", UpstreamBaseURL: "https://example.com/v1", UpstreamAPIKey: "sk-a2"},
+		},
+	}
+	p2.Normalize()
+	if err := p2.ValidatePool(); err != nil {
+		t.Fatalf("unexpected error for uniform pool: %v", err)
+	}
+}

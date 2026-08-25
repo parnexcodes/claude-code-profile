@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,13 @@ type Account struct {
 	APIKeyEnv    string `toml:"api_key_env"`
 	AuthToken    string `toml:"auth_token"`
 	APIKey       string `toml:"api_key"`
+	// Upstream OpenAI-compatible provider fields (only valid for type=cliproxy translated profiles).
+	UpstreamBaseURL    string `toml:"upstream_base_url"`
+	UpstreamAPIKeyEnv  string `toml:"upstream_api_key_env"`
+	UpstreamAPIKey     string `toml:"upstream_api_key"`
+	UpstreamName       string `toml:"upstream_name"`
+	UpstreamModel      string `toml:"upstream_model"`
+	UpstreamModelAlias string `toml:"upstream_model_alias"`
 }
 
 // Routing selects how a pool is cycled.
@@ -61,6 +69,16 @@ type Profile struct {
 	APIKeyEnv    string `toml:"api_key_env"`    // name of env var holding an API key
 	AuthToken    string `toml:"auth_token"`     // literal value (discouraged)
 	APIKey       string `toml:"api_key"`        // literal value (discouraged)
+
+	// Upstream OpenAI-compatible provider (only for type=cliproxy translated profiles).
+	// When set, ccp materializes an openai-compatibility entry in cliproxy/config.yaml
+	// and the profile still points ANTHROPIC_BASE_URL at the local proxy.
+	UpstreamBaseURL    string `toml:"upstream_base_url"`
+	UpstreamAPIKeyEnv  string `toml:"upstream_api_key_env"`
+	UpstreamAPIKey     string `toml:"upstream_api_key"`
+	UpstreamName       string `toml:"upstream_name"`        // openai-compatibility[].name override, defaults to profile name
+	UpstreamModel      string `toml:"upstream_model"`       // upstream real model name, defaults to Model
+	UpstreamModelAlias string `toml:"upstream_model_alias"` // local alias, defaults to Model (or UpstreamModel)
 
 	APITimeoutMS                         int  `toml:"api_timeout_ms"`
 	MaxThinkingTokens                    int  `toml:"max_thinking_tokens"`
@@ -247,19 +265,52 @@ func (p *Profile) normalize() {
 			p.Routing.Strategy = "round-robin"
 		}
 	}
+	// Upstream fields: trim spaces; base URL trimmed of trailing slash for stable comparison.
+	p.UpstreamBaseURL = strings.TrimSpace(p.UpstreamBaseURL)
+	p.UpstreamBaseURL = strings.TrimRight(p.UpstreamBaseURL, "/")
+	p.UpstreamAPIKeyEnv = strings.TrimSpace(p.UpstreamAPIKeyEnv)
+	p.UpstreamAPIKey = strings.TrimSpace(p.UpstreamAPIKey)
+	p.UpstreamName = strings.TrimSpace(p.UpstreamName)
+	p.UpstreamModel = strings.TrimSpace(p.UpstreamModel)
+	p.UpstreamModelAlias = strings.TrimSpace(p.UpstreamModelAlias)
 	for i := range p.Accounts {
 		a := &p.Accounts[i]
 		a.Auth = strings.ToLower(strings.TrimSpace(a.Auth))
 		a.Name = strings.TrimSpace(a.Name)
 		a.Description = strings.TrimSpace(a.Description)
+		a.UpstreamBaseURL = strings.TrimSpace(a.UpstreamBaseURL)
+		a.UpstreamBaseURL = strings.TrimRight(a.UpstreamBaseURL, "/")
+		a.UpstreamAPIKeyEnv = strings.TrimSpace(a.UpstreamAPIKeyEnv)
+		a.UpstreamAPIKey = strings.TrimSpace(a.UpstreamAPIKey)
+		a.UpstreamName = strings.TrimSpace(a.UpstreamName)
+		a.UpstreamModel = strings.TrimSpace(a.UpstreamModel)
+		a.UpstreamModelAlias = strings.TrimSpace(a.UpstreamModelAlias)
 	}
 	if len(p.Accounts) > 0 && p.hasTopLevelAuth() {
 		warnf("profile has both top-level auth and [[accounts]] pool; pool wins and top-level auth is ignored")
 	}
+	if p.HasUpstream() && p.Type != "cliproxy" {
+		warnf("profile %q has upstream_* fields but type=%q (only cliproxy supports upstream translation)", "profile", p.Type)
+	}
 }
-
 func (p *Profile) hasTopLevelAuth() bool {
 	return p.AuthTokenEnv != "" || p.APIKeyEnv != "" || p.AuthToken != "" || p.APIKey != "" || p.Auth != ""
+}
+
+func (p *Profile) HasUpstream() bool {
+	return p.UpstreamBaseURL != "" || p.UpstreamAPIKeyEnv != "" || p.UpstreamAPIKey != "" || p.UpstreamModel != "" || p.UpstreamName != "" || p.UpstreamModelAlias != ""
+}
+
+func (p *Profile) HasUpstreamAuth() bool {
+	return p.UpstreamAPIKeyEnv != "" || p.UpstreamAPIKey != ""
+}
+
+func (a *Account) HasUpstream() bool {
+	return a.UpstreamBaseURL != "" || a.UpstreamAPIKeyEnv != "" || a.UpstreamAPIKey != "" || a.UpstreamModel != "" || a.UpstreamName != "" || a.UpstreamModelAlias != ""
+}
+
+func (a *Account) HasUpstreamAuth() bool {
+	return a.UpstreamAPIKeyEnv != "" || a.UpstreamAPIKey != ""
 }
 
 func (p *Profile) routingStrategy() string {
@@ -270,8 +321,25 @@ func (p *Profile) routingStrategy() string {
 }
 
 func (p *Profile) isPooled() bool { return len(p.Accounts) > 0 }
-
 func (p *Profile) validatePool() error {
+	// Upstream validation for top-level profile (even without pool).
+	if p.HasUpstream() {
+		if p.Type != "cliproxy" {
+			return fmt.Errorf("upstream_* fields require type=\"cliproxy\" (got %q)", p.Type)
+		}
+		if p.UpstreamBaseURL == "" {
+			return fmt.Errorf("upstream_base_url is required when any upstream_* field is set")
+		}
+		if err := validateUpstreamURL(p.UpstreamBaseURL); err != nil {
+			return fmt.Errorf("upstream_base_url %q: %w", p.UpstreamBaseURL, err)
+		}
+		if !p.HasUpstreamAuth() {
+			return fmt.Errorf("upstream auth required: set upstream_api_key_env or upstream_api_key")
+		}
+		if p.UpstreamName != "" && !safeName(p.UpstreamName) {
+			return fmt.Errorf("upstream_name %q is invalid (allowed: [a-z0-9._-])", p.UpstreamName)
+		}
+	}
 	if !p.isPooled() {
 		return nil
 	}
@@ -279,9 +347,42 @@ func (p *Profile) validatePool() error {
 	if strat != "round-robin" {
 		return fmt.Errorf("unknown routing.strategy %q (supported: \"round-robin\")", strat)
 	}
+	// Upstream mixed-pool check: either all accounts have upstream or none do.
+	if p.HasUpstream() || anyAccountHasUpstream(p.Accounts) {
+		upCount := 0
+		for _, a := range p.Accounts {
+			if a.HasUpstream() {
+				upCount++
+			}
+		}
+		if upCount != 0 && upCount != len(p.Accounts) {
+			return fmt.Errorf("mixed upstream accounts: %d/%d accounts have upstream_* fields; either all or none must declare upstream", upCount, len(p.Accounts))
+		}
+		// If top-level has upstream but accounts override, ensure consistency handled via upCount check;
+		// also validate each upstream account.
+	}
 	for i, a := range p.Accounts {
 		if a.Name != "" && !safeName(a.Name) {
 			return fmt.Errorf("accounts[%d] name %q is invalid (allowed: [a-z0-9._-])", i, a.Name)
+		}
+		if a.HasUpstream() {
+			if a.UpstreamBaseURL == "" && p.UpstreamBaseURL == "" {
+				return fmt.Errorf("accounts[%d] upstream_base_url is required when upstream_* fields are set (no profile default)", i)
+			}
+			if a.UpstreamBaseURL != "" {
+				if err := validateUpstreamURL(a.UpstreamBaseURL); err != nil {
+					return fmt.Errorf("accounts[%d] upstream_base_url %q: %w", i, a.UpstreamBaseURL, err)
+				}
+			}
+			// Require per-account upstream auth if profile doesn't have it (or even if it does, allow override missing to inherit).
+			// For strict mixed-pool we already ensured all have upstream, but allow account to inherit auth from profile default.
+			hasAuth := a.HasUpstreamAuth() || p.HasUpstreamAuth()
+			if !hasAuth {
+				return fmt.Errorf("accounts[%d] upstream auth required: set upstream_api_key_env or upstream_api_key (profile or account)", i)
+			}
+			if a.UpstreamName != "" && !safeName(a.UpstreamName) {
+				return fmt.Errorf("accounts[%d] upstream_name %q is invalid (allowed: [a-z0-9._-])", i, a.UpstreamName)
+			}
 		}
 		if a.AuthTokenEnv == "" && a.APIKeyEnv == "" && a.AuthToken == "" && a.APIKey == "" && a.Auth == "none" {
 			// auth=none is explicitly allowed as an account that injects no credential
@@ -297,6 +398,29 @@ func (p *Profile) validatePool() error {
 		}
 	}
 	return nil
+}
+
+func validateUpstreamURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	return nil
+}
+
+func anyAccountHasUpstream(accounts []Account) bool {
+	for _, a := range accounts {
+		if a.HasUpstream() {
+			return true
+		}
+	}
+	return false
 }
 
 func safeName(n string) bool {
@@ -483,11 +607,12 @@ func (c *Config) ProxyConfigFile() string                       { return c.proxy
 func (c *Config) DefaultProfileName() string                    { return c.defaultProfileName() }
 func (c *Config) ResolveProfile(name string) (string, *Profile) { return c.resolveProfile(name) }
 
-func (p *Profile) Normalize()              { p.normalize() }
-func (p *Profile) HasTopLevelAuth() bool   { return p.hasTopLevelAuth() }
-func (p *Profile) RoutingStrategy() string { return p.routingStrategy() }
-func (p *Profile) IsPooled() bool          { return p.isPooled() }
-func (p *Profile) ValidatePool() error     { return p.validatePool() }
+func (p *Profile) Normalize()               { p.normalize() }
+func (p *Profile) HasTopLevelAuth() bool    { return p.hasTopLevelAuth() }
+func (p *Profile) RoutingStrategy() string  { return p.routingStrategy() }
+func (p *Profile) IsPooled() bool           { return p.isPooled() }
+func (p *Profile) ValidatePool() error      { return p.validatePool() }
+func (a *Account) HasUpstreamAccount() bool { return a.HasUpstream() }
 
 func (pc *ProxyConfig) Autostart() bool { return pc.autostart() }
 

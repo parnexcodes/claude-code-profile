@@ -14,6 +14,12 @@ func launch(name string, rest []string, quiet bool) {
 	cfg := mustLoadConfig()
 	name, p := cfg.ResolveProfile(name)
 
+	// For translated OpenAI upstreams, ensure the proxy YAML is in sync and daemon is up.
+	if p.HasUpstream() {
+		if err := ensureProxyForUpstream(cfg, name, p); err != nil {
+			die("ensuring upstream proxy for %q: %v", name, err)
+		}
+	}
 	if p.Type == "cliproxy" && !proxyReachable(cfg) {
 		if cfg.Proxy.Autostart() {
 			if err := startProxy(cfg); err != nil {
@@ -122,44 +128,122 @@ func showProfile(name string) {
 	}
 
 	fmt.Printf("%s  %s\n", paint(cBold, name), p.Description)
-	fmt.Printf("  type:         %s\n", p.Type)
+	fmt.Printf("  type:         %s", p.Type)
+	if p.HasUpstream() {
+		fmt.Printf(" (translated OpenAI → Anthropic)\n")
+		fmt.Printf("  upstream:     %s\n", expandEnvVars(p.UpstreamBaseURL))
+		if p.UpstreamAPIKeyEnv != "" {
+			val := os.Getenv(p.UpstreamAPIKeyEnv)
+			if val != "" {
+				fmt.Printf("  up auth:      $%s (%s)\n", p.UpstreamAPIKeyEnv, maskSecret(val))
+			} else {
+				fmt.Printf("  up auth:      $%s (unset)\n", p.UpstreamAPIKeyEnv)
+			}
+		} else if p.UpstreamAPIKey != "" {
+			fmt.Printf("  up auth:      literal %s\n", maskSecret(expandEnvVars(p.UpstreamAPIKey)))
+		}
+		if p.UpstreamModel != "" {
+			fmt.Printf("  up model:     %s\n", p.UpstreamModel)
+			if p.UpstreamModelAlias != "" && p.UpstreamModelAlias != p.UpstreamModel {
+				fmt.Printf("  alias:        %s\n", p.UpstreamModelAlias)
+			}
+		} else if p.UpstreamModelAlias != "" {
+			fmt.Printf("  alias:        %s\n", p.UpstreamModelAlias)
+		}
+		if p.UpstreamName != "" {
+			fmt.Printf("  up name:      %s\n", p.UpstreamName)
+		}
+		if synced, reason := isUpstreamSynced(cfg, name, p); !synced {
+			fmt.Printf("  proxy sync:   drifted (%s)\n", reason)
+		} else {
+			fmt.Printf("  proxy sync:   in sync\n")
+		}
+	} else {
+		fmt.Printf("\n")
+	}
 	if p.IsPooled() {
 		fmt.Printf("  pool:         %d accounts (%s)  next=%d\n", len(p.Accounts), p.RoutingStrategy(), peekRoutingIndex(name, len(p.Accounts)))
 		for i, a := range p.Accounts {
 			src := ""
 			displayVal := ""
-			if a.AuthTokenEnv != "" {
-				src = "$" + a.AuthTokenEnv
-				if v := os.Getenv(a.AuthTokenEnv); v != "" {
-					displayVal = maskSecret(v)
+			var baseNote string
+			if p.HasUpstream() {
+				// Upstream per-account
+				if a.UpstreamAPIKeyEnv != "" {
+					src = "$" + a.UpstreamAPIKeyEnv
+					if v := os.Getenv(a.UpstreamAPIKeyEnv); v != "" {
+						displayVal = maskSecret(v)
+					} else {
+						displayVal = "(unset)"
+					}
+				} else if a.UpstreamAPIKey != "" {
+					src = "upstream api_key (config)"
+					displayVal = maskSecret(expandEnvVars(a.UpstreamAPIKey))
+				} else if p.UpstreamAPIKeyEnv != "" {
+					src = "$" + p.UpstreamAPIKeyEnv + " (inherit)"
+					if v := os.Getenv(p.UpstreamAPIKeyEnv); v != "" {
+						displayVal = maskSecret(v)
+					} else {
+						displayVal = "(unset)"
+					}
+				} else if p.UpstreamAPIKey != "" {
+					src = "upstream api_key (inherit)"
+					displayVal = maskSecret(expandEnvVars(p.UpstreamAPIKey))
 				} else {
-					displayVal = "(unset)"
+					src = "(no upstream auth)"
+					displayVal = ""
 				}
-			} else if a.APIKeyEnv != "" {
-				src = "$" + a.APIKeyEnv
-				if v := os.Getenv(a.APIKeyEnv); v != "" {
-					displayVal = maskSecret(v)
-				} else {
-					displayVal = "(unset)"
+				if a.UpstreamBaseURL != "" {
+					baseNote = " upstream_base_url=" + expandEnvVars(a.UpstreamBaseURL)
+				} else if p.UpstreamBaseURL != "" && i == 0 {
+					baseNote = " upstream_base_url=" + expandEnvVars(p.UpstreamBaseURL) + " (profile)"
 				}
-			} else if a.AuthToken != "" {
-				src = "auth_token (config)"
-				displayVal = maskSecret(expandEnvVars(a.AuthToken))
-			} else if a.APIKey != "" {
-				src = "api_key (config)"
-				displayVal = maskSecret(expandEnvVars(a.APIKey))
-			} else if a.Auth == "none" {
-				src = "none"
-				displayVal = "(none)"
-			} else if p.Type == "cliproxy" {
-				src = "proxy config api-keys[0]"
-				if keys := readProxyAPIKeys(cfg); len(keys) > 0 {
-					displayVal = maskSecret(keys[0])
-				} else {
-					displayVal = "(no proxy key)"
+				if a.UpstreamModel != "" {
+					baseNote += " upstream_model=" + a.UpstreamModel
+				}
+				if a.UpstreamModelAlias != "" {
+					baseNote += " alias=" + a.UpstreamModelAlias
+				}
+				if a.BaseURL != "" {
+					baseNote += " base_url=" + expandEnvVars(a.BaseURL)
 				}
 			} else {
-				src = "(no auth)"
+				if a.AuthTokenEnv != "" {
+					src = "$" + a.AuthTokenEnv
+					if v := os.Getenv(a.AuthTokenEnv); v != "" {
+						displayVal = maskSecret(v)
+					} else {
+						displayVal = "(unset)"
+					}
+				} else if a.APIKeyEnv != "" {
+					src = "$" + a.APIKeyEnv
+					if v := os.Getenv(a.APIKeyEnv); v != "" {
+						displayVal = maskSecret(v)
+					} else {
+						displayVal = "(unset)"
+					}
+				} else if a.AuthToken != "" {
+					src = "auth_token (config)"
+					displayVal = maskSecret(expandEnvVars(a.AuthToken))
+				} else if a.APIKey != "" {
+					src = "api_key (config)"
+					displayVal = maskSecret(expandEnvVars(a.APIKey))
+				} else if a.Auth == "none" {
+					src = "none"
+					displayVal = "(none)"
+				} else if p.Type == "cliproxy" {
+					src = "proxy config api-keys[0]"
+					if keys := readProxyAPIKeys(cfg); len(keys) > 0 {
+						displayVal = maskSecret(keys[0])
+					} else {
+						displayVal = "(no proxy key)"
+					}
+				} else {
+					src = "(no auth)"
+				}
+				if a.BaseURL != "" {
+					baseNote = " base_url=" + expandEnvVars(a.BaseURL)
+				}
 			}
 			marker := " "
 			if built != nil && i == built.SelectedIdx {
@@ -168,10 +252,6 @@ func showProfile(name string) {
 			nameDisp := ""
 			if a.Name != "" {
 				nameDisp = " (" + a.Name + ")"
-			}
-			baseNote := ""
-			if a.BaseURL != "" {
-				baseNote = " base_url=" + expandEnvVars(a.BaseURL)
 			}
 			fmt.Printf("    %s [%d]%s %s %s%s\n", marker, i, nameDisp, src, displayVal, baseNote)
 		}
@@ -256,6 +336,13 @@ func listProfiles() {
 		poolTag := ""
 		if p.IsPooled() {
 			poolTag = paint(cDim, fmt.Sprintf(" ×%d", len(p.Accounts)))
+		}
+		if p.HasUpstream() {
+			if poolTag != "" {
+				poolTag += paint(cDim, " translated")
+			} else {
+				poolTag = paint(cDim, " translated")
+			}
 		}
 		marker := " "
 		if n == def {

@@ -3,6 +3,7 @@ package cli
 import (
 	"ccp/internal/profile"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -59,6 +60,43 @@ func runDoctor() {
 		}
 		if err := p.ValidatePool(); err != nil {
 			check("fail", "%s: %v", n, err)
+		}
+		if p.HasUpstream() {
+			if p.IsPooled() {
+				// For pooled, check each account's upstream auth
+				for i, a := range p.Accounts {
+					if a.HasUpstream() {
+						if a.UpstreamAPIKeyEnv != "" {
+							if v := os.Getenv(a.UpstreamAPIKeyEnv); v == "" {
+								check("fail", "%s accounts[%d]: upstream_api_key_env $%s is unset; export it", n, i, a.UpstreamAPIKeyEnv)
+							} else {
+								check("ok", "%s accounts[%d]: upstream $%s set (%s)", n, i, a.UpstreamAPIKeyEnv, maskSecret(v))
+							}
+						} else if a.UpstreamAPIKey != "" {
+							check("ok", "%s accounts[%d]: upstream api key literal set (%s)", n, i, maskSecret(a.UpstreamAPIKey))
+						} else if p.UpstreamAPIKeyEnv == "" && p.UpstreamAPIKey == "" {
+							check("fail", "%s accounts[%d]: upstream auth missing", n, i)
+						}
+					}
+				}
+			} else {
+				if p.UpstreamAPIKeyEnv != "" {
+					if v := os.Getenv(p.UpstreamAPIKeyEnv); v == "" {
+						check("fail", "%s: upstream_api_key_env $%s is unset; export it or set upstream_api_key", n, p.UpstreamAPIKeyEnv)
+					} else {
+						check("ok", "%s: upstream $%s set (%s)", n, p.UpstreamAPIKeyEnv, maskSecret(v))
+					}
+				} else if p.UpstreamAPIKey != "" {
+					check("ok", "%s: upstream api key literal set (%s)", n, maskSecret(p.UpstreamAPIKey))
+				} else {
+					check("fail", "%s: upstream auth missing", n)
+				}
+			}
+			if synced, reason := isUpstreamSynced(cfg, n, p); !synced {
+				check("fail", "%s: proxy sync drifted: %s; run `ccp show %s` or re-add", n, reason, n)
+			} else {
+				check("ok", "%s: proxy sync in sync", n)
+			}
 		}
 		if p.IsPooled() {
 			for i, a := range p.Accounts {

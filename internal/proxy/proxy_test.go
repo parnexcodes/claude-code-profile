@@ -232,3 +232,132 @@ func TestArchVariants(t *testing.T) {
 		t.Fatalf("386 %v", got)
 	}
 }
+
+func TestSyncOpenAICompat_AddAndPreserve(t *testing.T) {
+	dir := t.TempDir()
+	state := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", state)
+	t.Setenv("HOME", home)
+	t.Setenv("OPENCODE_GO_API_KEY", "sk-test-123")
+	os.MkdirAll(dir, 0o700)
+	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
+	// Pre-existing config with port and api-keys and unrelated openai entry
+	existing := "port: 8317\nauth-dir: \"" + filepath.Join(home, ".cli-proxy-api") + "\"\napi-keys:\n  - \"existing-key\"\nopenai-compatibility:\n  - name: other-provider\n    base-url: https://other.example/v1\n    api-key-entries:\n      - api-key: other-key\n    models:\n      - name: other-model\n        alias: other-alias\n"
+	cfgPath := filepath.Join(dir, "cliproxy", "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	p := &config.Profile{
+		Type:              "cliproxy",
+		Model:             "muse-spark-1.2-contributor",
+		UpstreamBaseURL:   "https://opencode.ai/zen/go/v1",
+		UpstreamAPIKeyEnv: "OPENCODE_GO_API_KEY",
+		UpstreamModel:     "muse-spark-1.2-contributor",
+	}
+	if err := SyncOpenAICompat(cfg, "muse", p); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	// Check new entry exists and old preserved
+	if !strings.Contains(string(data), "muse") {
+		t.Fatalf("new entry not found: %s", string(data))
+	}
+	if !strings.Contains(string(data), "other-provider") {
+		t.Fatalf("old entry lost: %s", string(data))
+	}
+	if !strings.Contains(string(data), "https://opencode.ai/zen/go/v1") {
+		t.Fatalf("base url not found")
+	}
+	if !strings.Contains(string(data), "sk-test-123") {
+		t.Fatalf("api key not expanded: %s", string(data))
+	}
+	// Check perms
+	if fi, err := os.Stat(cfgPath); err == nil {
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("perm %o want 0600", fi.Mode().Perm())
+		}
+	}
+	// Now test IsUpstreamSynced
+	synced, reason := IsUpstreamSynced(cfg, "muse", p)
+	if !synced {
+		t.Fatalf("expected synced, got %q", reason)
+	}
+}
+
+func TestSyncOpenAICompat_UpdateAndRemove(t *testing.T) {
+	dir := t.TempDir()
+	state := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", state)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KEY_A", "sk-a")
+	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
+	cfg, _ := config.LoadConfig()
+	p := &config.Profile{
+		Type:              "cliproxy",
+		Model:             "m1",
+		UpstreamBaseURL:   "https://a.example/v1",
+		UpstreamAPIKeyEnv: "KEY_A",
+	}
+	if err := SyncOpenAICompat(cfg, "test", p); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// Update with new base
+	t.Setenv("KEY_B", "sk-b")
+	p.UpstreamBaseURL = "https://b.example/v1"
+	p.UpstreamAPIKeyEnv = "KEY_B"
+	if err := SyncOpenAICompat(cfg, "test", p); err != nil {
+		t.Fatalf("update sync: %v", err)
+	}
+	data, _ := os.ReadFile(cfg.ProxyConfigFile())
+	if !strings.Contains(string(data), "https://b.example/v1") {
+		t.Fatalf("update not reflected: %s", string(data))
+	}
+	if strings.Contains(string(data), "https://a.example/v1") {
+		t.Fatalf("old base still present: %s", string(data))
+	}
+	// Remove
+	if err := RemoveOpenAICompat(cfg, "test"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	data, _ = os.ReadFile(cfg.ProxyConfigFile())
+	if strings.Contains(string(data), "test") {
+		t.Fatalf("entry not removed: %s", string(data))
+	}
+	synced, _ := IsUpstreamSynced(cfg, "test", p)
+	if synced {
+		t.Fatalf("expected not synced after remove")
+	}
+}
+
+func TestSyncOpenAICompat_NormalizesResponsesEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("K", "sk-123")
+	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
+	cfg, _ := config.LoadConfig()
+	p := &config.Profile{
+		Type:            "cliproxy",
+		Model:           "muse",
+		UpstreamBaseURL: "https://opencode.ai/zen/go/v1/responses",
+		UpstreamAPIKey:  "sk-123",
+	}
+	if err := SyncOpenAICompat(cfg, "muse", p); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	data, _ := os.ReadFile(cfg.ProxyConfigFile())
+	if !strings.Contains(string(data), "https://opencode.ai/zen/go/v1") {
+		t.Fatalf("normalized base not found: %s", string(data))
+	}
+	if strings.Contains(string(data), "/responses") {
+		t.Fatalf("should not contain /responses suffix: %s", string(data))
+	}
+}

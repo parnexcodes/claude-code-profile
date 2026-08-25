@@ -224,3 +224,114 @@ auth_token_env="MISSING_ENV"
 		t.Fatalf("expected buildEnvPeek error for missing env")
 	}
 }
+
+func TestHandleAdd_UpstreamCreatesProxyEntry(t *testing.T) {
+	dir := t.TempDir()
+	state := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", state)
+	t.Setenv("HOME", home)
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("OPENCODE_KEY", "sk-upstream-123")
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+	os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{}`), 0o600)
+	// Ensure proxy dir exists
+	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
+	// Use non-wizard handleAdd with upstream flags
+	handleAdd([]string{"muse", "--type", "cliproxy", "--model", "muse-spark-1.2-contributor", "--upstream-base-url", "https://opencode.ai/zen/go/v1", "--upstream-api-key-env", "OPENCODE_KEY"})
+	// Check profile TOML exists and contains upstream fields
+	data, err := os.ReadFile(filepath.Join(dir, "profiles", "muse.toml"))
+	if err != nil {
+		t.Fatalf("profile not created: %v", err)
+	}
+	if !strings.Contains(string(data), "upstream_base_url") || !strings.Contains(string(data), "OPENCODE_KEY") {
+		t.Fatalf("upstream fields not in TOML: %s", string(data))
+	}
+	// Check proxy YAML entry
+	proxyData, err := os.ReadFile(filepath.Join(dir, "cliproxy", "config.yaml"))
+	if err != nil {
+		t.Fatalf("proxy config not created: %v", err)
+	}
+	if !strings.Contains(string(proxyData), "opencode.ai/zen/go/v1") {
+		t.Fatalf("proxy entry not found: %s", string(proxyData))
+	}
+	if !strings.Contains(string(proxyData), "muse-spark-1.2-contributor") {
+		t.Fatalf("model not in proxy: %s", string(proxyData))
+	}
+	// Check show masks secret
+	out := captureStdout(func() { showProfile("muse") })
+	if strings.Contains(out, "sk-upstream-123") {
+		t.Fatalf("secret leaked in show: %q", out)
+	}
+	if !strings.Contains(out, "translated") {
+		t.Fatalf("expected translated in show, got %q", out)
+	}
+	// Check list shows translated indicator
+	outList := captureStdout(func() { listProfiles() })
+	if !strings.Contains(outList, "translated") {
+		t.Fatalf("expected translated in list, got %q", outList)
+	}
+}
+
+func TestRenderProfileToml_Upstream(t *testing.T) {
+	p := &config.Profile{
+		Type:               "cliproxy",
+		Model:              "muse",
+		UpstreamBaseURL:    "https://opencode.ai/zen/go/v1",
+		UpstreamAPIKeyEnv:  "MY_KEY",
+		UpstreamModel:      "muse-spark-1.2-contributor",
+		UpstreamModelAlias: "muse",
+	}
+	out := renderProfileToml(p)
+	if !strings.Contains(out, "upstream_base_url") {
+		t.Fatalf("missing upstream_base_url: %q", out)
+	}
+	if !strings.Contains(out, "MY_KEY") {
+		t.Fatalf("missing upstream key env: %q", out)
+	}
+	if !strings.Contains(out, "upstream_model") {
+		t.Fatalf("missing upstream_model: %q", out)
+	}
+	// Deterministic
+	if out2 := renderProfileToml(p); out != out2 {
+		t.Fatalf("not deterministic")
+	}
+	// With accounts
+	p.Accounts = []config.Account{
+		{UpstreamBaseURL: "https://a.example/v1", UpstreamAPIKeyEnv: "KEY_A"},
+		{UpstreamBaseURL: "https://a.example/v1", UpstreamAPIKeyEnv: "KEY_B"},
+	}
+	out = renderProfileToml(p)
+	if !strings.Contains(out, "[[accounts]]") {
+		t.Fatalf("missing accounts")
+	}
+	if !strings.Contains(out, "KEY_A") || !strings.Contains(out, "KEY_B") {
+		t.Fatalf("missing account upstream keys: %q", out)
+	}
+}
+
+func TestHandleAdd_UpstreamNormalizesResponsesEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CCP_HOME", dir)
+	t.Setenv("CCP_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("NO_COLOR", "1")
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
+	// Use handleAdd with full /v1/responses endpoint - should be normalized to /v1
+	handleAdd([]string{"m2", "--type", "cliproxy", "--model", "muse", "--upstream-base-url", "https://opencode.ai/zen/go/v1/responses", "--upstream-api-key", "sk-123"})
+	data, _ := os.ReadFile(filepath.Join(dir, "profiles", "m2.toml"))
+	if strings.Contains(string(data), "/responses") {
+		t.Fatalf("should have normalized /responses away: %s", string(data))
+	}
+	if !strings.Contains(string(data), "https://opencode.ai/zen/go/v1\"") {
+		t.Fatalf("normalized url not found: %s", string(data))
+	}
+	cfg, _ := config.LoadConfig()
+	pData, _ := os.ReadFile(cfg.ProxyConfigFile())
+	if strings.Contains(string(pData), "/responses") {
+		t.Fatalf("proxy should not contain /responses: %s", string(pData))
+	}
+}

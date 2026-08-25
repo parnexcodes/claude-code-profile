@@ -107,10 +107,41 @@ State (pid file, logs, downloaded binaries) lives under `~/.local/state/ccp/`.
 
 Profiles of `type = "cliproxy"` point `ANTHROPIC_BASE_URL` at
 `http://127.0.0.1:<port>` and reuse the proxy's own `api-keys[0]` as bearer
-token unless the profile sets `auth_token_env` / `api_key_env`.
+token unless the profile sets `auth_token_env` / `api_key_env`. For generic
+OpenAI endpoints that don't speak Anthropic, `ccp` transparently translates
+via `openai-compatibility` — `upstream_*` fields in `profiles/*.toml` are the
+source of truth and `cliproxy/config.yaml:openai-compatibility` is derived.
+
+### Transparent OpenAI upstreams (Opencode Go, OpenRouter, custom)
+
+Any `https://.../v1/responses` or `.../v1/chat/completions` endpoint (the
+Opencode Go table's `@ai-sdk/openai` rows, e.g. `muse-spark-1.2-contributor`
+at `https://opencode.ai/zen/go/v1/responses`) works via a translated
+`cliproxy` profile. `ccp` owns the proxy config — no `ccp proxy` or YAML
+editing needed:
+
+```sh
+export OPENCODE_GO_API_KEY=sk-...
+ccp add muse --type cliproxy --model muse-spark-1.2-contributor \
+  --upstream-base-url https://opencode.ai/zen/go/v1 \
+  --upstream-api-key-env OPENCODE_GO_API_KEY
+
+ccp show muse   # shows upstream base URL, masked key, alias, and proxy sync drift
+ccp muse        # claude → Anthropic /v1/messages → 127.0.0.1:8317 → OpenAI Responses → Opencode Go
+```
+
+Or via the wizard: `ccp add` → `cliproxy` → `Translate generic OpenAI upstream? y`
+→ prompts for upstream base URL, upstream API key, upstream model and local
+alias. `ccp` normalizes a pasted full endpoint like
+`https://opencode.ai/zen/go/v1/responses` → `.../v1` and warns.
+`ccp show`/`ccp doctor` surface whether `cliproxy/config.yaml:openai-compatibility`
+is in sync; `ccp remove` cleans it up; `ccp <profile>` auto-installs/starts the
+proxy if needed. `ccp list` marks translated profiles as `translated`.
+
+For pooled translated profiles (multiple interchangeable upstreams under one
+`ccp` command): `ccp add relay --type cliproxy --account upstream_base_url=https://a.example/v1,upstream_api_key_env=KEY_A --account upstream_api_key_env=KEY_B` or follow the wizard's per-account upstream prompts. Per-account `upstream_base_url` overrides the profile default for that account.
 
 ### Direct Anthropic-compatible relays
-
 ```toml
 # ~/.config/ccp/profiles/deepseek.toml
 description = "DeepSeek direct"

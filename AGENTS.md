@@ -24,12 +24,11 @@ Single Go binary `ccp` — Claude Code profile launcher. `cmd/ccp` + `internal/*
 
 `cmd/ccp/main.go` is a thin entrypoint that calls `internal/cli.Run()`. All logic lives in `internal/*`:
 
-- `internal/config` — load `config.toml` + `profiles/*.toml` (`profiles/` wins on name collision, `config:179`), bootstrap seed profiles on first run (`config:323`); pooled `[[accounts]]` + `[routing]` (round-robin only); path helpers `CcpConfigDir`/`CcpStateDir`
+- `internal/config` — load `config.toml` + `profiles/*.toml` (`profiles/` wins on name collision, `config:179`), bootstrap seed profiles on first run (`config:323`); pooled `[[accounts]]` + `[routing]` (round-robin only); `upstream_*` (`upstream_base_url`, `upstream_api_key_env`, `upstream_api_key`, `upstream_name`, `upstream_model`, `upstream_model_alias`) on `Profile`/`Account` for translated OpenAI upstreams (`HasUpstream`, `ValidatePool` upstream checks, `normalize` trims, `validateUpstreamURL`); path helpers `CcpConfigDir`/`CcpStateDir`
 - `internal/profile` — env assembly (`BuildEnv`/`BuildEnvPeek`/`AssembleEnv`), auth resolution per-profile and per-`Account` (`ResolveAccountAuth`, `ResolveProfileAuth`), managed-var stripping (`ManagedVars` — 20+ vars including `ANTHROPIC_*`, `CLAUDE_CODE_*`, Bedrock/Vertex toggles)
 - `internal/routing` + `routing/daemon_unix.go`/`daemon_other.go:lockRoutingState` — persisted round-robin counter at `<state>/routing/<profile>.json` (atomic tmp+rename, flock on unix)
-- `internal/cli` — `launch` (exec replacement of `claude`), `show`/`list`, `add`/`edit`/`remove`/`default`, `proxy` dispatch, `doctor`, `completion`; uses `internal/tui` for prompts
-- `internal/proxy` + `proxy/daemon_unix.go` — CLIProxyAPI daemon lifecycle (pid file, log, `Setsid` on unix), `FindProxyBinary`, `FetchProxyModels`, install
-- `internal/settings` — reads `~/.claude/settings.json` for model inheritance and conflict detection (`ReadClaudeSettings`, `FindEnvConflicts`, `InheritModel`)
+- `internal/cli` — `launch` (exec replacement of `claude`, upstream `EnsureProxyForUpstream` drift repair), `show`/`list` (translated indicator, upstream + sync status), `add`/`edit`/`remove`/`default` (wizard + flags for `upstream_*` per-account, `syncOpenAICompat`/`removeOpenAICompat`), `proxy` dispatch, `doctor` (upstream env + sync drift), `completion`; uses `internal/tui` for prompts
+- `internal/proxy` + `proxy/daemon_unix.go` — CLIProxyAPI daemon lifecycle (pid file, log, `Setsid` on unix), `FindProxyBinary`, `FetchProxyModels`, install; `openai-compatibility` YAML merge (`SyncOpenAICompat`/`RemoveOpenAICompat`/`IsUpstreamSynced`/`EnsureProxyForUpstream`/`UpstreamHealthProbe`, atomic tmp+rename, `proxyUpstreamMu` + sidecar lock)
 - `internal/tui` — `SelectOption`, `PromptLine`, `ConfirmYN` (arrow-key menu, `golang.org/x/term`)
 - `internal/util` — `ExpandEnvVars`, `MaskSecret`, `ProbeURL`, `Paint`, `Die`/`Warnf`, `FileExists`, `HomeDir` etc.
 - `internal/testutil` — `TempCCPHome`, `TempHome`, `MustWriteFile` helpers for hermetic tests
@@ -43,6 +42,7 @@ Dependency DAG: `util` ← `config` ← `routing` ← `profile` ← `proxy` (via
 - First run creates `config.toml` + `profiles/glm.toml|kimi.toml|official.toml` — never overwrites existing files (`config:308`)
 - Profile `type` must be `cliproxy` or `anthropic` (defaults to `anthropic` if empty, `config:212`). `cliproxy` reuses `api-keys[0]` from `cliproxy/config.yaml` as bearer token unless `auth_token_env`/`api_key_env` set.
 - `${VAR}` / `$VAR` expanded from process env in profile values at launch time (`util:101`).
+- `upstream_*` only valid for `type = "cliproxy"` translated profiles; `ccp` normalizes pasted full endpoints like `https://opencode.ai/zen/go/v1/responses` → `https://opencode.ai/zen/go/v1` (`cliNormalizeUpstreamBaseURL`/`normalizeUpstreamBaseURL`), validates `http(s)://` host, and derives `cliproxy/config.yaml:openai-compatibility[]` atomically (`tmp+rename`, `proxyUpstreamMu`); `ccp show`/`doctor` surface sync drift, `ccp remove` cleans the YAML entry, `ccp <profile>` drift-repairs via `EnsureProxyForUpstream`.
 - Proxy binary resolution order (`proxy:52`): `config.proxy.binary` > `PATH` (`cli-proxy-api`/`CLIProxyAPI`) > `~/.local/bin/cli-proxy-api` > `<state>/bin/cli-proxy-api`
 - `ccp show PROFILE` is the non-destructive way to verify env without launching claude.
 
