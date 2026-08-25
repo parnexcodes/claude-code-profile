@@ -64,6 +64,7 @@ func findProxyBinary(cfg *config.Config) string {
 	}
 	for _, cand := range []string{
 		filepath.Join(homeDir(), ".local", "bin", "cli-proxy-api"),
+		filepath.Join(homeDir(), "cliproxyapi", "cli-proxy-api"),
 		filepath.Join(ccpStateDir(), "bin", "cli-proxy-api"),
 	} {
 		if isExecutable(cand) {
@@ -299,8 +300,47 @@ func archVariants(a string) []string {
 	}
 }
 
+func isOpenWrtSystem() bool {
+	if _, err := os.Stat("/etc/openwrt_release"); err == nil {
+		return true
+	}
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		if strings.Contains(strings.ToLower(string(data)), "openwrt") {
+			return true
+		}
+	}
+	return false
+}
+
+func isMuslSystem() bool {
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		return true
+	}
+	for _, pat := range []string{"/lib/ld-musl-*.so*", "/usr/lib/ld-musl-*.so*"} {
+		if matches, _ := filepath.Glob(pat); len(matches) > 0 {
+			return true
+		}
+	}
+	if out, err := exec.Command("ldd", "--version").CombinedOutput(); err == nil {
+		if strings.Contains(strings.ToLower(string(out)), "musl") {
+			return true
+		}
+	} else if out != nil && strings.Contains(strings.ToLower(string(out)), "musl") {
+		return true
+	}
+	return false
+}
+
+func wantNoPluginAsset() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	return isMuslSystem() || isOpenWrtSystem()
+}
+
 func pickAsset(r *ghRelease) (string, error) {
 	goos := runtime.GOOS
+	wantNoPlugin := wantNoPluginAsset()
 	score := func(nameLower string) int {
 		if !strings.Contains(nameLower, goos) {
 			return -1
@@ -330,15 +370,32 @@ func pickAsset(r *ghRelease) (string, error) {
 		}
 	}
 	best, bestScore := "", -1
+	fallback, fallbackScore := "", -1
 	for _, a := range r.Assets {
-		if s := score(strings.ToLower(a.Name)); s > bestScore {
+		lower := strings.ToLower(a.Name)
+		s := score(lower)
+		if s < 0 {
+			continue
+		}
+		hasNoPlugin := strings.Contains(lower, "no-plugin")
+		// On Linux, prefer the variant matching the host libc.
+		if runtime.GOOS == "linux" && hasNoPlugin != wantNoPlugin {
+			if s > fallbackScore {
+				fallbackScore, fallback = s, a.BrowserDownloadURL
+			}
+			continue
+		}
+		if s > bestScore {
 			bestScore, best = s, a.BrowserDownloadURL
 		}
 	}
-	if bestScore < 0 {
-		return "", fmt.Errorf("no asset matching %s/%s in release %s", goos, runtime.GOARCH, r.TagName)
+	if bestScore >= 0 {
+		return best, nil
 	}
-	return best, nil
+	if fallbackScore >= 0 {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("no asset matching %s/%s in release %s", goos, runtime.GOARCH, r.TagName)
 }
 
 func downloadTo(url, dest string) error {
@@ -441,7 +498,7 @@ func extractBinary(archive, destDir string) (string, error) {
 
 func isBinaryName(base string) bool {
 	b := strings.ToLower(base)
-	return strings.HasPrefix(b, "cli-proxy-api") || b == "cliproxyapi" ||
+	return strings.HasPrefix(b, "cli-proxy-api") || strings.HasPrefix(b, "cliproxyapi") ||
 		strings.HasPrefix(b, "cli_proxy_api")
 }
 
@@ -449,15 +506,19 @@ func installProxy() error {
 	infof("querying latest CLIProxyAPI release…")
 	req, _ := http.NewRequest("GET", "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "ccp")
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return err
+	}
+	defer closeQuietly(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetching release: HTTP %d", resp.StatusCode)
 	}
 	var rel ghRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		return err
 	}
-	closeQuietly(resp.Body)
 
 	asset, err := pickAsset(&rel)
 	if err != nil {
@@ -467,7 +528,7 @@ func installProxy() error {
 	if err != nil {
 		return err
 	}
-	_ = os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	archivePath := filepath.Join(tmpDir, filepath.Base(asset))
 	infof("downloading %s…", paint(cDim, filepath.Base(asset)))
