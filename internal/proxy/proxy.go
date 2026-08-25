@@ -3,6 +3,7 @@ package proxy
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"ccp/internal/config"
 	"ccp/internal/util"
 	"compress/gzip"
@@ -165,6 +166,8 @@ func stopProxy(cfg *config.Config) error {
 
 func scaffoldProxyConfig(path string) {
 	key := randHex(24)
+	authDir := filepath.Join(homeDir(), ".cli-proxy-api")
+	authDir = strings.ReplaceAll(authDir, "\\", "/")
 	body := fmt.Sprintf(`# Minimal CLIProxyAPI config scaffolded by ccp.
 # Full reference: https://help.router-for.me/
 port: 8317
@@ -178,10 +181,29 @@ api-keys:
 remote-management:
   allowremote: false
   secret-key: ""
-`, filepath.Join(homeDir(), ".cli-proxy-api"), key)
+`, authDir, key)
 	if _, err := writeFileIfMissing(path, body, 0o600); err != nil {
 		die("writing %s: %v", path, err)
 	}
+}
+
+// unmarshalYAML is tolerant of Windows paths with unescaped backslashes in
+// double-quoted strings (e.g., auth-dir: "C:\Users\..."). gopkg.in/yaml.v3
+// reports "did not find expected hexdecimal number" for \U escapes. We
+// fallback to forward-slash replacement which is safe for this config (only
+// paths contain backslashes).
+func unmarshalYAML(data []byte, out interface{}) error {
+	if err := yaml.Unmarshal(data, out); err == nil {
+		return nil
+	}
+	// Fallback for legacy Windows configs with unescaped backslashes in
+	// double-quoted auth-dir (e.g., "C:\Users\..."). Converts to forward
+	// slashes which are YAML-safe and valid on Windows.
+	fixed := bytes.ReplaceAll(data, []byte("\\"), []byte("/"))
+	if err2 := yaml.Unmarshal(fixed, out); err2 == nil {
+		return nil
+	}
+	return yaml.Unmarshal(data, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +416,7 @@ func RemoveOpenAICompat(cfg *config.Config, profileName string) error {
 	}
 	// Decode into generic map to preserve unknown keys.
 	var fm map[string]interface{}
-	if err := yaml.Unmarshal(data, &fm); err != nil {
+	if err := unmarshalYAML(data, &fm); err != nil {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if fm == nil {
@@ -470,7 +492,7 @@ func IsUpstreamSynced(cfg *config.Config, profileName string, p *config.Profile)
 		return false, "proxy config empty"
 	}
 	var fm map[string]interface{}
-	if err := yaml.Unmarshal(data, &fm); err != nil {
+	if err := unmarshalYAML(data, &fm); err != nil {
 		return false, "proxy config parse error"
 	}
 	raw, ok := fm["openai-compatibility"]
@@ -593,7 +615,7 @@ func upsertOpenAICompatEntry(cfg *config.Config, entry openAICompatEntry) error 
 	}
 	var fm map[string]interface{}
 	if len(data) > 0 {
-		if err := yaml.Unmarshal(data, &fm); err != nil {
+		if err := unmarshalYAML(data, &fm); err != nil {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 	}
@@ -1172,7 +1194,7 @@ func readProxyConfigFile(cfg *config.Config) *proxyYAML {
 		return nil
 	}
 	var y proxyYAML
-	if err := yaml.Unmarshal(data, &y); err != nil {
+	if err := unmarshalYAML(data, &y); err != nil {
 		util.Warnf("cannot parse %s: %v", cfg.ProxyConfigFile(), err)
 		return nil
 	}

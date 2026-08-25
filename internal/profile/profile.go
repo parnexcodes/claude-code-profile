@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -175,13 +176,24 @@ type proxyYAML struct {
 	AuthDir string   `yaml:"auth-dir"`
 }
 
+func unmarshalYAML(data []byte, out interface{}) error {
+	if err := yaml.Unmarshal(data, out); err == nil {
+		return nil
+	}
+	fixed := bytes.ReplaceAll(data, []byte("\\"), []byte("/"))
+	if err2 := yaml.Unmarshal(fixed, out); err2 == nil {
+		return nil
+	}
+	return yaml.Unmarshal(data, out)
+}
+
 func readProxyConfigFile(cfg *config.Config) *proxyYAML {
 	data, err := os.ReadFile(cfg.ProxyConfigFile())
 	if err != nil {
 		return nil
 	}
 	var y proxyYAML
-	if err := yaml.Unmarshal(data, &y); err != nil {
+	if err := unmarshalYAML(data, &y); err != nil {
 		util.Warnf("cannot parse %s: %v", cfg.ProxyConfigFile(), err)
 		return nil
 	}

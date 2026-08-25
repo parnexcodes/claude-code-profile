@@ -243,8 +243,8 @@ func TestSyncOpenAICompat_AddAndPreserve(t *testing.T) {
 	t.Setenv("OPENCODE_GO_API_KEY", "sk-test-123")
 	os.MkdirAll(dir, 0o700)
 	os.MkdirAll(filepath.Join(dir, "cliproxy"), 0o700)
-	// Pre-existing config with port and api-keys and unrelated openai entry
-	existing := "port: 8317\nauth-dir: \"" + filepath.Join(home, ".cli-proxy-api") + "\"\napi-keys:\n  - \"existing-key\"\nopenai-compatibility:\n  - name: other-provider\n    base-url: https://other.example/v1\n    api-key-entries:\n      - api-key: other-key\n    models:\n      - name: other-model\n        alias: other-alias\n"
+	// Pre-existing config with port and api-keys and unrelated openai entry (use ToSlash for Windows backslash safety)
+	existing := "port: 8317\nauth-dir: \"" + filepath.ToSlash(filepath.Join(home, ".cli-proxy-api")) + "\"\napi-keys:\n  - \"existing-key\"\nopenai-compatibility:\n  - name: other-provider\n    base-url: https://other.example/v1\n    api-key-entries:\n      - api-key: other-key\n    models:\n      - name: other-model\n        alias: other-alias\n"
 	cfgPath := filepath.Join(dir, "cliproxy", "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
 		t.Fatalf("write existing: %v", err)
