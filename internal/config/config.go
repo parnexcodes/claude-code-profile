@@ -34,6 +34,7 @@ type Account struct {
 	UpstreamName       string `toml:"upstream_name"`
 	UpstreamModel      string `toml:"upstream_model"`
 	UpstreamModelAlias string `toml:"upstream_model_alias"`
+	UpstreamProtocol   string `toml:"upstream_protocol"`
 }
 
 // Routing selects how a pool is cycled.
@@ -79,6 +80,7 @@ type Profile struct {
 	UpstreamName       string `toml:"upstream_name"`        // openai-compatibility[].name override, defaults to profile name
 	UpstreamModel      string `toml:"upstream_model"`       // upstream real model name, defaults to Model
 	UpstreamModelAlias string `toml:"upstream_model_alias"` // local alias, defaults to Model (or UpstreamModel)
+	UpstreamProtocol   string `toml:"upstream_protocol"`    // "chat" (default, OpenAI chat/completions) or "responses" (OpenAI responses API)
 
 	APITimeoutMS                         int  `toml:"api_timeout_ms"`
 	MaxThinkingTokens                    int  `toml:"max_thinking_tokens"`
@@ -273,6 +275,16 @@ func (p *Profile) normalize() {
 	p.UpstreamName = strings.TrimSpace(p.UpstreamName)
 	p.UpstreamModel = strings.TrimSpace(p.UpstreamModel)
 	p.UpstreamModelAlias = strings.TrimSpace(p.UpstreamModelAlias)
+	p.UpstreamProtocol = strings.ToLower(strings.TrimSpace(p.UpstreamProtocol))
+	if p.UpstreamProtocol != "" && p.UpstreamProtocol != "chat" && p.UpstreamProtocol != "responses" && p.UpstreamProtocol != "openai" && p.UpstreamProtocol != "openai-responses" {
+		warnf("profile %q: unknown upstream_protocol %q (allowed: chat, responses)", "profile", p.UpstreamProtocol)
+	}
+	if p.UpstreamProtocol == "openai" {
+		p.UpstreamProtocol = "chat"
+	}
+	if p.UpstreamProtocol == "openai-responses" {
+		p.UpstreamProtocol = "responses"
+	}
 	for i := range p.Accounts {
 		a := &p.Accounts[i]
 		a.Auth = strings.ToLower(strings.TrimSpace(a.Auth))
@@ -285,6 +297,13 @@ func (p *Profile) normalize() {
 		a.UpstreamName = strings.TrimSpace(a.UpstreamName)
 		a.UpstreamModel = strings.TrimSpace(a.UpstreamModel)
 		a.UpstreamModelAlias = strings.TrimSpace(a.UpstreamModelAlias)
+		a.UpstreamProtocol = strings.ToLower(strings.TrimSpace(a.UpstreamProtocol))
+		if a.UpstreamProtocol == "openai" {
+			a.UpstreamProtocol = "chat"
+		}
+		if a.UpstreamProtocol == "openai-responses" {
+			a.UpstreamProtocol = "responses"
+		}
 	}
 	if len(p.Accounts) > 0 && p.hasTopLevelAuth() {
 		warnf("profile has both top-level auth and [[accounts]] pool; pool wins and top-level auth is ignored")
@@ -298,7 +317,7 @@ func (p *Profile) hasTopLevelAuth() bool {
 }
 
 func (p *Profile) HasUpstream() bool {
-	return p.UpstreamBaseURL != "" || p.UpstreamAPIKeyEnv != "" || p.UpstreamAPIKey != "" || p.UpstreamModel != "" || p.UpstreamName != "" || p.UpstreamModelAlias != ""
+	return p.UpstreamBaseURL != "" || p.UpstreamAPIKeyEnv != "" || p.UpstreamAPIKey != "" || p.UpstreamModel != "" || p.UpstreamName != "" || p.UpstreamModelAlias != "" || p.UpstreamProtocol != ""
 }
 
 func (p *Profile) HasUpstreamAuth() bool {
@@ -306,7 +325,33 @@ func (p *Profile) HasUpstreamAuth() bool {
 }
 
 func (a *Account) HasUpstream() bool {
-	return a.UpstreamBaseURL != "" || a.UpstreamAPIKeyEnv != "" || a.UpstreamAPIKey != "" || a.UpstreamModel != "" || a.UpstreamName != "" || a.UpstreamModelAlias != ""
+	return a.UpstreamBaseURL != "" || a.UpstreamAPIKeyEnv != "" || a.UpstreamAPIKey != "" || a.UpstreamModel != "" || a.UpstreamName != "" || a.UpstreamModelAlias != "" || a.UpstreamProtocol != ""
+}
+
+func (p *Profile) UpstreamProtocolNormalized() string {
+	if p.UpstreamProtocol == "responses" {
+		return "responses"
+	}
+	return "chat"
+}
+
+func (a *Account) UpstreamProtocolNormalized() string {
+	if a.UpstreamProtocol == "responses" {
+		return "responses"
+	}
+	return "chat"
+}
+
+func (p *Profile) IsUpstreamResponses() bool {
+	if p.UpstreamProtocol == "responses" {
+		return true
+	}
+	for _, a := range p.Accounts {
+		if a.UpstreamProtocol == "responses" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Account) HasUpstreamAuth() bool {

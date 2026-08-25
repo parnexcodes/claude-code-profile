@@ -2,7 +2,6 @@ package cli
 
 import (
 	"ccp/internal/config"
-	"ccp/internal/proxy"
 	"fmt"
 	"net/url"
 	"os"
@@ -136,6 +135,10 @@ parsed:
 
 	case "proxy":
 		handleProxy(rest)
+	case "shim":
+		handleShim(rest)
+	case "internal-shim":
+		handleInternalShim(rest)
 	case "doctor":
 		runDoctor()
 	case "completion":
@@ -181,6 +184,7 @@ type addOpts struct {
 	upstreamName                  string
 	upstreamModel                 string
 	upstreamModelAlias            string
+	upstreamProtocol              string
 }
 
 func parseAccountSpec(spec string) config.Account {
@@ -227,8 +231,10 @@ func parseAccountSpec(spec string) config.Account {
 			a.UpstreamModel = v
 		case "upstream_model_alias", "upstream-model-alias", "upstream_alias", "upstream-alias":
 			a.UpstreamModelAlias = v
+		case "upstream_protocol", "upstream-protocol":
+			a.UpstreamProtocol = v
 		default:
-			die("unknown account key %q in --account %q (allowed: name, base_url, auth, auth_token_env, api_key_env, auth_token, api_key, upstream_base_url, upstream_api_key_env, upstream_api_key, upstream_name, upstream_model, upstream_model_alias)", k, spec)
+			die("unknown account key %q in --account %q (allowed: name, base_url, auth, auth_token_env, api_key_env, auth_token, api_key, upstream_base_url, upstream_api_key_env, upstream_api_key, upstream_name, upstream_model, upstream_model_alias, upstream_protocol)", k, spec)
 		}
 	}
 	return a
@@ -309,6 +315,8 @@ func handleAdd(args []string) {
 			o.upstreamModel = take()
 		case "--upstream-model-alias", "--upstream-alias":
 			o.upstreamModelAlias = take()
+		case "--upstream-protocol":
+			o.upstreamProtocol = take()
 		default:
 			die("unknown option %q", args[i])
 		}
@@ -349,6 +357,7 @@ func handleAdd(args []string) {
 	put("upstream_name", o.upstreamName)
 	put("upstream_model", o.upstreamModel)
 	put("upstream_model_alias", o.upstreamModelAlias)
+	put("upstream_protocol", o.upstreamProtocol)
 	put("auth_token_env", o.authTokenEnv)
 	put("api_key_env", o.apiKeyEnv)
 	put("haiku_model", o.haiku)
@@ -424,7 +433,7 @@ func handleAdd(args []string) {
 	}
 
 	// Validate upstream fields and sync to proxy before writing profile.
-	hasUpstream := o.upstreamBaseURL != "" || o.upstreamAPIKeyEnv != "" || o.upstreamAPIKey != "" || o.upstreamName != "" || o.upstreamModel != "" || o.upstreamModelAlias != ""
+	hasUpstream := o.upstreamBaseURL != "" || o.upstreamAPIKeyEnv != "" || o.upstreamAPIKey != "" || o.upstreamName != "" || o.upstreamModel != "" || o.upstreamModelAlias != "" || o.upstreamProtocol != ""
 	hasAccountUpstream := false
 	for _, a := range accounts {
 		if a.HasUpstream() {
@@ -452,6 +461,7 @@ func handleAdd(args []string) {
 			UpstreamName:       o.upstreamName,
 			UpstreamModel:      o.upstreamModel,
 			UpstreamModelAlias: o.upstreamModelAlias,
+			UpstreamProtocol:   o.upstreamProtocol,
 			Accounts:           accounts,
 		}
 		if o.typ == "" {
@@ -482,8 +492,35 @@ func handleAdd(args []string) {
 			}
 		}
 		cfg := mustLoadConfig()
-		if err := syncOpenAICompat(cfg, name, tmpProfile); err != nil {
-			die("syncing upstream to proxy: %v", err)
+		// Sync to proxy (chat) and/or shim (responses) depending on protocol
+		if tmpProfile.IsUpstreamResponses() {
+			// If mixed pool, also sync chat part to proxy for chat accounts
+			hasChat := false
+			if tmpProfile.UpstreamProtocolNormalized() == "chat" {
+				hasChat = true
+			}
+			for _, a := range tmpProfile.Accounts {
+				if a.UpstreamProtocolNormalized() == "chat" && a.HasUpstream() {
+					hasChat = true
+					break
+				}
+			}
+			if hasChat {
+				if err := syncOpenAICompat(cfg, name, tmpProfile); err != nil {
+					die("syncing upstream to proxy: %v", err)
+				}
+			} else {
+				_ = removeOpenAICompat(cfg, name)
+			}
+			if err := ensureShimForUpstream(cfg, name, tmpProfile); err != nil {
+				die("syncing upstream to shim: %v", err)
+			}
+		} else {
+			if err := syncOpenAICompat(cfg, name, tmpProfile); err != nil {
+				die("syncing upstream to proxy: %v", err)
+			}
+			// Clean any stale shim entry
+			_ = removeShimEntry(cfg, name)
 		}
 		// If type was implicit cliproxy, ensure TOML has explicit type line.
 		if o.typ == "" && hasUpstream {
@@ -587,9 +624,12 @@ func handleRemove(name string) {
 	}
 	// Best-effort clean of routing state.
 	clearRoutingState(name)
-	// Best-effort clean of upstream proxy entry.
+	// Best-effort clean of upstream proxy/shim entries.
 	if err := removeOpenAICompat(cfg, name); err != nil {
 		warnf("could not clean proxy upstream for %q: %v", name, err)
+	}
+	if err := removeShimEntry(cfg, name); err != nil {
+		warnf("could not clean shim upstream for %q: %v", name, err)
 	}
 	if removed {
 		okf("removed profiles/%s.toml", name)
@@ -645,7 +685,7 @@ func runAddWizard() {
 		baseURL = promptLine("Base URL (blank for proxy default http://127.0.0.1:8317)", "")
 	}
 
-	var upstreamBaseURL, upstreamAPIKeyEnv, upstreamAPIKey, upstreamName, upstreamModel, upstreamModelAlias string
+	var upstreamBaseURL, upstreamAPIKeyEnv, upstreamAPIKey, upstreamName, upstreamModel, upstreamModelAlias, upstreamProtocol string
 	var hasUpstream bool
 	if typ == "cliproxy" {
 		if confirmYN("Translate generic OpenAI upstream (Opencode Go, OpenRouter, etc.)?", false) {
@@ -690,7 +730,7 @@ func runAddWizard() {
 					warnf("key cannot be empty")
 				}
 			}
-			upstreamModel = promptLine("Upstream model name (e.g. muse-spark-1.2-contributor)", "")
+			upstreamModel = promptLine("Upstream model name (e.g. gpt-5, my-model)", "")
 			if upstreamModel == "" {
 				warnf("upstream model is empty; will default to local alias")
 			}
@@ -702,6 +742,15 @@ func runAddWizard() {
 			if upstreamName != "" && !safeName(upstreamName) {
 				warnf("invalid upstream name %q; ignoring", upstreamName)
 				upstreamName = ""
+			}
+			upstreamProtocol = promptLine("Upstream protocol [chat/responses] (blank=chat)", "")
+			upstreamProtocol = strings.ToLower(strings.TrimSpace(upstreamProtocol))
+			if upstreamProtocol != "" && upstreamProtocol != "chat" && upstreamProtocol != "responses" {
+				warnf("unknown upstream_protocol %q, using chat", upstreamProtocol)
+				upstreamProtocol = "chat"
+			}
+			if upstreamProtocol == "responses" {
+				infof("using OpenAI Responses API via shim")
 			}
 		}
 	}
@@ -1186,6 +1235,7 @@ func runAddWizard() {
 		UpstreamName:                         upstreamName,
 		UpstreamModel:                        upstreamModel,
 		UpstreamModelAlias:                   upstreamModelAlias,
+		UpstreamProtocol:                     upstreamProtocol,
 		HaikuModel:                           haiku,
 		APITimeoutMS:                         timeoutMS,
 		MaxContextTokens:                     ctxTokens,
@@ -1199,8 +1249,17 @@ func runAddWizard() {
 		die("%v", err)
 	}
 	if hasUpstream {
-		if err := proxy.SyncOpenAICompat(cfg, name, p); err != nil {
-			die("syncing upstream to proxy: %v", err)
+		if p.IsUpstreamResponses() {
+			if err := ensureShimForUpstream(cfg, name, p); err != nil {
+				die("syncing upstream to shim: %v", err)
+			}
+			// Also ensure proxy entry is cleaned if previously was chat
+			_ = removeOpenAICompat(cfg, name)
+		} else {
+			if err := syncOpenAICompat(cfg, name, p); err != nil {
+				die("syncing upstream to proxy: %v", err)
+			}
+			_ = removeShimEntry(cfg, name)
 		}
 	}
 	if err := saveProfile(name, p); err != nil {
@@ -1257,6 +1316,9 @@ func renderProfileToml(p *config.Profile) string {
 	}
 	if p.UpstreamModelAlias != "" {
 		fmt.Fprintf(&b, "upstream_model_alias = %q\n", p.UpstreamModelAlias)
+	}
+	if p.UpstreamProtocol != "" {
+		fmt.Fprintf(&b, "upstream_protocol = %q\n", p.UpstreamProtocol)
 	}
 	if p.Model != "" {
 		fmt.Fprintf(&b, "model = %q\n", p.Model)
@@ -1348,6 +1410,9 @@ func renderProfileToml(p *config.Profile) string {
 			}
 			if a.UpstreamModelAlias != "" {
 				fmt.Fprintf(&b, "upstream_model_alias = %q\n", a.UpstreamModelAlias)
+			}
+			if a.UpstreamProtocol != "" {
+				fmt.Fprintf(&b, "upstream_protocol = %q\n", a.UpstreamProtocol)
 			}
 			if a.Auth != "" {
 				fmt.Fprintf(&b, "auth = %q\n", a.Auth)

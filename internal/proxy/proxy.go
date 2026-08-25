@@ -316,6 +316,11 @@ func SyncOpenAICompat(cfg *config.Config, profileName string, p *config.Profile)
 		// No upstream declared — remove stale entry if present.
 		return RemoveOpenAICompat(cfg, profileName)
 	}
+	if p.IsUpstreamResponses() {
+		// Responses upstreams are handled by the shim, not CLIProxyAPI; ensure no stale openai-compatibility entry.
+		_ = RemoveOpenAICompat(cfg, profileName)
+		return nil
+	}
 	// Validate upstream fields exist (also validated in config.ValidatePool, but double-check for direct calls).
 	rawBase := p.UpstreamBaseURL
 	if rawBase == "" && p.IsPooled() {
@@ -479,6 +484,9 @@ func RemoveOpenAICompat(cfg *config.Config, profileName string) error {
 func IsUpstreamSynced(cfg *config.Config, profileName string, p *config.Profile) (bool, string) {
 	if !p.HasUpstream() {
 		return true, "no upstream"
+	}
+	if p.IsUpstreamResponses() {
+		return true, "responses upstream (shim)"
 	}
 	path := cfg.ProxyConfigFile()
 	if !fileExists(path) {
@@ -723,6 +731,9 @@ func unlockFlock(f *os.File) {}
 // and the daemon is up (or reloads). It is idempotent.
 func EnsureProxyForUpstream(cfg *config.Config, profileName string, p *config.Profile) error {
 	if !p.HasUpstream() {
+		return nil
+	}
+	if p.IsUpstreamResponses() {
 		return nil
 	}
 	if findProxyBinary(cfg) == "" {

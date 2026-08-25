@@ -14,13 +14,25 @@ func launch(name string, rest []string, quiet bool) {
 	cfg := mustLoadConfig()
 	name, p := cfg.ResolveProfile(name)
 
-	// For translated OpenAI upstreams, ensure the proxy YAML is in sync and daemon is up.
+	// For translated OpenAI upstreams, ensure the proxy/shim YAML is in sync and daemon is up.
 	if p.HasUpstream() {
-		if err := ensureProxyForUpstream(cfg, name, p); err != nil {
-			die("ensuring upstream proxy for %q: %v", name, err)
+		if p.IsUpstreamResponses() {
+			if err := ensureShimForUpstream(cfg, name, p); err != nil {
+				die("ensuring upstream shim for %q: %v", name, err)
+			}
+		} else {
+			if err := ensureProxyForUpstream(cfg, name, p); err != nil {
+				die("ensuring upstream proxy for %q: %v", name, err)
+			}
 		}
 	}
-	if p.Type == "cliproxy" && !proxyReachable(cfg) {
+	if p.IsUpstreamResponses() {
+		if !shimReachable(cfg) {
+			if err := startShim(cfg); err != nil {
+				die("%v", err)
+			}
+		}
+	} else if p.Type == "cliproxy" && !proxyReachable(cfg) {
 		if cfg.Proxy.Autostart() {
 			if err := startProxy(cfg); err != nil {
 				die("%v", err)
@@ -153,12 +165,20 @@ func showProfile(name string) {
 		if p.UpstreamName != "" {
 			fmt.Printf("  up name:      %s\n", p.UpstreamName)
 		}
-		if synced, reason := isUpstreamSynced(cfg, name, p); !synced {
+		if p.UpstreamProtocol != "" {
+			fmt.Printf("  up protocol:  %s\n", p.UpstreamProtocol)
+		}
+		if p.IsUpstreamResponses() {
+			if shimReachable(cfg) {
+				fmt.Printf("  shim:         %s (up)\n", shimBaseURL(cfg))
+			} else {
+				fmt.Printf("  shim:         %s (down)\n", shimBaseURL(cfg))
+			}
+		} else if synced, reason := isUpstreamSynced(cfg, name, p); !synced {
 			fmt.Printf("  proxy sync:   drifted (%s)\n", reason)
 		} else {
 			fmt.Printf("  proxy sync:   in sync\n")
 		}
-	} else {
 		fmt.Printf("\n")
 	}
 	if p.IsPooled() {

@@ -117,7 +117,8 @@ func runDoctor() {
 	fmt.Printf("\n%s\n", paint(cDim, "proxy (CLIProxyAPI)"))
 	needsProxy := false
 	for _, n := range names {
-		if cfg.Profiles[n].Type == "cliproxy" {
+		p := cfg.Profiles[n]
+		if p.Type == "cliproxy" && !p.IsUpstreamResponses() {
 			needsProxy = true
 			break
 		}
@@ -142,6 +143,22 @@ func runDoctor() {
 		}
 	} else if needsProxy {
 		check("warn", "endpoint: %s is down (auto_start=%v)", proxyBaseURL(cfg), cfg.Proxy.Autostart())
+	} else {
+		check("ok", "not in use by any profile")
+	}
+
+	fmt.Printf("\n%s\n", paint(cDim, "shim (Responses)"))
+	needsShim := false
+	for _, n := range names {
+		if cfg.Profiles[n].IsUpstreamResponses() {
+			needsShim = true
+			break
+		}
+	}
+	if shimReachable(cfg) {
+		check("ok", "endpoint: %s is up", shimBaseURL(cfg))
+	} else if needsShim {
+		check("warn", "endpoint: %s is down", shimBaseURL(cfg))
 	} else {
 		check("ok", "not in use by any profile")
 	}

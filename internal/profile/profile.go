@@ -3,9 +3,11 @@ package profile
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -80,6 +82,13 @@ func accountAuthMode(a *config.Account, profileType string) string {
 }
 
 func ResolveAccountAuth(a *config.Account, cfg *config.Config, profileType string) (*AuthResult, error) {
+	if a != nil && a.UpstreamProtocolNormalized() == "responses" {
+		keys := ReadProxyAPIKeys(cfg)
+		if len(keys) > 0 {
+			return &AuthResult{"ANTHROPIC_AUTH_TOKEN", keys[0], "shim (proxy api-keys[0])"}, nil
+		}
+		return &AuthResult{"ANTHROPIC_AUTH_TOKEN", "shim-dummy-token", "shim dummy"}, nil
+	}
 	mode := accountAuthMode(a, profileType)
 	if mode == "none" {
 		return nil, nil
@@ -130,6 +139,13 @@ func profileAuthMode(p *config.Profile) string {
 }
 
 func ResolveProfileAuth(p *config.Profile, cfg *config.Config) (*AuthResult, error) {
+	if p.IsUpstreamResponses() {
+		keys := ReadProxyAPIKeys(cfg)
+		if len(keys) > 0 {
+			return &AuthResult{"ANTHROPIC_AUTH_TOKEN", keys[0], "shim (proxy api-keys[0])"}, nil
+		}
+		return &AuthResult{"ANTHROPIC_AUTH_TOKEN", "shim-dummy-token", "shim dummy"}, nil
+	}
 	mode := profileAuthMode(p)
 	if mode == "none" {
 		return nil, nil
@@ -215,6 +231,19 @@ func ReadProxyAPIKeys(cfg *config.Config) []string {
 func EffectiveBaseURL(p *config.Profile, cfg *config.Config) string {
 	if p.BaseURL != "" {
 		return strings.TrimRight(util.ExpandEnvVars(p.BaseURL), "/")
+	}
+	if p.IsUpstreamResponses() {
+		host := "127.0.0.1"
+		port := 8318
+		if h := os.Getenv("CCP_SHIM_HOST"); h != "" {
+			host = h
+		}
+		if pp := os.Getenv("CCP_SHIM_PORT"); pp != "" {
+			if n, err := strconv.Atoi(pp); err == nil && n > 0 {
+				port = n
+			}
+		}
+		return fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(port)))
 	}
 	if p.Type == "cliproxy" {
 		return fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)

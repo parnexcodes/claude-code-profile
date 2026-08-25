@@ -6,6 +6,7 @@ import (
 	"ccp/internal/proxy"
 	"ccp/internal/routing"
 	"ccp/internal/settings"
+	"ccp/internal/shim"
 	"ccp/internal/tui"
 	"ccp/internal/util"
 )
@@ -81,6 +82,15 @@ func ensureProxyForUpstream(cfg *config.Config, name string, p *config.Profile) 
 func isUpstreamSynced(cfg *config.Config, name string, p *config.Profile) (bool, string) {
 	return proxy.IsUpstreamSynced(cfg, name, p)
 }
+
+// shim delegates
+func shimBaseURL(cfg *config.Config) string { return shim.ShimBaseURL(cfg) }
+func shimReachable(cfg *config.Config) bool { return shim.ShimReachable(cfg) }
+func startShim(cfg *config.Config) error    { return shim.StartShim(cfg) }
+func ensureShimForUpstream(cfg *config.Config, name string, p *config.Profile) error {
+	return shim.EnsureShimForUpstream(cfg, name, p)
+}
+func removeShimEntry(cfg *config.Config, name string) error { return shim.RemoveShimEntry(cfg, name) }
 
 // settings delegates
 func readClaudeSettings(path string) (*settings.ClaudeSettings, error) {
