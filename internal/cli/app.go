@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var Version = "0.4.0"
+var Version = "0.8.0"
 
 const usage = `ccp: Claude Code profile launcher
 
