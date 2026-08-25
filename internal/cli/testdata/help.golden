@@ -43,10 +43,10 @@ profile options (profiles/<name>.toml):
   extra_env               raw map of additional KEY=VALUE (${VAR} expanded)
 
 examples:
-  ccp glm                       # GLM via CLIProxyAPI (auto-starts it)
-  ccp kimi --resume             # pass flags straight through to claude
-  ccp official                  # vanilla Claude Code with your login
-  ZAI_API_KEY=sk-… ccp glm      # secrets resolved from the environment at launch
+  ccp myprofile                 # launch with your profile (auto-starts proxy if needed)
+  ccp myprofile --resume        # pass flags straight through to claude
+  ccp myprofile -p "hello"      # any trailing args go to claude
+  ANTHROPIC_API_KEY=sk-… ccp myprofile  # secrets resolved from env at launch
 
 files:
   config:   /tmp/tmp.emxlnthRH7/config.toml

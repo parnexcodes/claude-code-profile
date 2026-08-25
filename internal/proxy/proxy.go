@@ -1153,7 +1153,7 @@ func installProxy() error {
 	okf("installed %s (%s)", paint(cBold, target), rel.TagName)
 	infof("ccp auto-detects this path; next: %s then %s",
 		paint(cBold, "ccp proxy start"),
-		paint(cBold, "ccp glm"))
+		paint(cBold, "ccp add myprofile --type cliproxy"))
 	return nil
 }
 

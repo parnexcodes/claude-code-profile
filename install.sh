@@ -187,7 +187,7 @@ main() {
 	esac
 
 	log "done. next steps:"
-	log "  ccp list            # see profiles (glm/kimi seeds created on first run)"
+	log "  ccp add myprofile --type anthropic   # create your first profile"
 	log "  ccp proxy install   # optional: CLIProxyAPI for OpenAI-style models"
 	log "  ccp completion zsh >> ~/.zshrc   # or: ccp completion bash >> ~/.bashrc"
 }

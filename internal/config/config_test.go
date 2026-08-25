@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -49,39 +50,55 @@ func TestBootstrap_CreatesSeedsAndNotOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if len(cfg.Profiles) == 0 {
-		t.Fatalf("expected seeded profiles")
+	if len(cfg.Profiles) != 0 {
+		t.Fatalf("expected no seeded profiles, got %d: %v", len(cfg.Profiles), cfg.ProfileNames())
 	}
-	for _, name := range []string{"glm", "kimi", "official"} {
-		if _, ok := cfg.Profiles[name]; !ok {
-			t.Fatalf("missing seed %s", name)
-		}
-		path := filepath.Join(dir, "profiles", name+".toml")
-		fi, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
-			t.Fatalf("perm %o want 600", fi.Mode().Perm())
-		}
+	// config.toml must exist with 0600
+	fi, err := os.Stat(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatalf("stat config.toml: %v", err)
 	}
-	// second load should not overwrite
-	customPath := filepath.Join(dir, "profiles", "glm.toml")
-	orig, _ := os.ReadFile(customPath)
-	os.WriteFile(customPath, []byte("type = \"anthropic\"\nmodel = \"custom\"\n"), 0o600)
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("config perm %o want 600", fi.Mode().Perm())
+	}
+	// profiles dir exists and is empty
+	entries, err := os.ReadDir(filepath.Join(dir, "profiles"))
+	if err != nil {
+		t.Fatalf("ReadDir profiles: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected empty profiles dir, got %d entries", len(entries))
+	}
+	// content should not contain seeded names, but should have default_profile commented
+	data, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if got := string(data); !strings.Contains(got, "# default_profile") {
+		t.Fatalf("config.toml should contain commented default_profile, got %q", got)
+	}
+	// second load should not overwrite config.toml
+	orig, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
+	// create a custom profile and ensure it persists
+	customPath := filepath.Join(dir, "profiles", "custom.toml")
+	if err := os.WriteFile(customPath, []byte("type = \"anthropic\"\nmodel = \"custom\"\n"), 0o600); err != nil {
+		t.Fatalf("write custom: %v", err)
+	}
 	cfg2, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("second load: %v", err)
 	}
-	if cfg2.Profiles["glm"].Model != "custom" {
-		t.Fatalf("expected custom not overwritten, got %q", cfg2.Profiles["glm"].Model)
+	if cfg2.Profiles["custom"].Model != "custom" {
+		t.Fatalf("expected custom not overwritten, got %q", cfg2.Profiles["custom"].Model)
 	}
 	// ensure config.toml not overwritten
-	fi, _ := os.Stat(filepath.Join(dir, "config.toml"))
-	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
-		t.Fatalf("config perm %o", fi.Mode().Perm())
+	data2, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if string(orig) != string(data2) {
+		t.Fatalf("config.toml was overwritten")
 	}
-	_ = orig
+	if runtime.GOOS != "windows" {
+		fi2, _ := os.Stat(customPath)
+		if fi2.Mode().Perm() != 0o600 {
+			t.Fatalf("custom perm %o want 600", fi2.Mode().Perm())
+		}
+	}
 }
 
 func TestSafeName(t *testing.T) {

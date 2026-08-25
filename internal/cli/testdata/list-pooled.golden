@@ -1,7 +1,6 @@
   NAME          TYPE       MODEL            DESCRIPTION
-  codex     anthropic  test-model       pool example ×2
- *glm       cliproxy   glm-4.6          GLM via local CLIProxyAPI
-  kimi      cliproxy   kimi-k3          Kimi via local CLIProxyAPI
-  official  anthropic  claude-sonnet-4 (from settings.json) Official Anthropic (vanilla Claude Code)
+ *myprofile  anthropic  claude-sonnet-4 (from settings.json) My first profile
+  pool       anthropic  test-model       pool example ×2
+  work       cliproxy   gpt-5            Work via proxy
 
-  default: bare `ccp` launches "glm"
+  default: bare `ccp` launches "myprofile"

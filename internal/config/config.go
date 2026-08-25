@@ -518,8 +518,8 @@ const configTemplate = `# ccp: Claude Code profile launcher
 # Profiles live in profiles/*.toml (one file per profile), or define them
 # inline here as [profiles.<name>] tables. Run ` + "`ccp help`" + ` for details.
 
-# Which profile bare ` + "`" + `ccp` + "`" + ` launches.
-default_profile = "glm"
+# Which profile bare ` + "`" + `ccp` + "`" + ` launches (empty = list profiles).
+# default_profile = ""
 
 [proxy]
 # CLIProxyAPI lifecycle settings (used by profiles with type = "cliproxy").
@@ -532,30 +532,6 @@ port = 8317
 auto_start = true        # start the proxy when a profile needs it and it is down
 start_timeout_secs = 20
 #extra_args = []
-`
-
-const glmTemplate = `# ` + "`" + `ccp glm` + "`" + `; GLM through local CLIProxyAPI.
-# Run ` + "`" + `ccp proxy models` + "`" + ` to list model IDs your proxy actually exposes.
-description = "GLM via local CLIProxyAPI"
-type = "cliproxy"
-model = "glm-4.6"
-#haiku_model = "glm-4.5-air"   # cheaper model for background/haiku tasks
-api_timeout_ms = 600000
-`
-
-const kimiTemplate = `# ` + "`" + `ccp kimi` + "`" + `; Kimi through local CLIProxyAPI.
-# Run ` + "`" + `ccp proxy models` + "`" + ` to list model IDs your proxy actually exposes.
-description = "Kimi via local CLIProxyAPI"
-type = "cliproxy"
-model = "kimi-k3"
-api_timeout_ms = 600000
-`
-
-const officialTemplate = `# ` + "`" + `ccp official` + "`" + `; vanilla Claude Code with your Anthropic login.
-description = "Official Anthropic (vanilla Claude Code)"
-type = "anthropic"
-auth = "none"
-# ccp strips all managed variables below so your normal login/settings apply.
 `
 
 func writeFileIfMissing(path, content string, perm os.FileMode) (bool, error) {
@@ -571,8 +547,8 @@ func writeFileIfMissing(path, content string, perm os.FileMode) (bool, error) {
 	return true, nil
 }
 
-// bootstrap creates config dirs, a starter config.toml and seed profiles on
-// first run. It never overwrites existing files.
+// bootstrap creates config dirs and a starter config.toml on first run.
+// It never overwrites existing files and creates no profiles by default.
 func bootstrap(dir string) error {
 	stateDir := ccpStateDir()
 	for _, d := range []string{
@@ -590,34 +566,11 @@ func bootstrap(dir string) error {
 	if err != nil {
 		return err
 	}
-	seeds := map[string]string{
-		"glm":      glmTemplate,
-		"kimi":     kimiTemplate,
-		"official": officialTemplate,
-	}
-	var names []string
-	for name, body := range seeds {
-		ok, err := writeFileIfMissing(filepath.Join(dir, "profiles", name+".toml"), body, 0o600)
-		if err != nil {
-			return err
-		}
-		if ok {
-			names = append(names, name)
-		}
-	}
-	if created || len(names) > 0 {
-		sort.Strings(names)
+	if created {
 		infof("initialized %s %s", paint(cDim, dir),
-			paint(cDim, "(created config.toml"+profileSeedNote(names)+")"))
+			paint(cDim, "(created config.toml)"))
 	}
 	return nil
-}
-
-func profileSeedNote(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	return " + profiles/" + strings.Join(names, ", ") + ".toml"
 }
 
 // ---------------------------------------------------------------------------
