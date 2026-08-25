@@ -277,10 +277,12 @@ func TestSyncOpenAICompat_AddAndPreserve(t *testing.T) {
 	if !strings.Contains(string(data), "sk-test-123") {
 		t.Fatalf("api key not expanded: %s", string(data))
 	}
-	// Check perms
-	if fi, err := os.Stat(cfgPath); err == nil {
-		if fi.Mode().Perm() != 0o600 {
-			t.Fatalf("perm %o want 0600", fi.Mode().Perm())
+	// Check perms (skip on Windows where chmod is not enforced)
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(cfgPath); err == nil {
+			if fi.Mode().Perm() != 0o600 {
+				t.Fatalf("perm %o want 0600", fi.Mode().Perm())
+			}
 		}
 	}
 	// Now test IsUpstreamSynced
