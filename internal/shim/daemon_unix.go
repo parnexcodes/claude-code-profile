@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 func detach(cmd *exec.Cmd) {
@@ -43,8 +44,7 @@ func stopQuietly(pid int) {
 		if !procAlive(pid) {
 			return
 		}
-		// sleep 100ms
-		_ = syscall.Nanosleep(&syscall.Timespec{Sec: 0, Nsec: 100 * 1000000}, nil)
+		time.Sleep(100 * time.Millisecond)
 	}
 	_ = forceKillProcessGroup(pid)
 }
